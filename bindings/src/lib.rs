@@ -4,10 +4,16 @@ use cooklang::aisle::parse_lenient;
 use cooklang::metadata::StdKey as OriginalStdKey;
 
 pub mod aisle;
+pub mod error;
+pub mod extensions;
 pub mod model;
 pub mod shopping_list;
 
 use aisle::*;
+#[allow(unused_imports)]
+use error::*;
+#[allow(unused_imports)]
+use extensions::*;
 use model::*;
 
 /// Parses a Cooklang recipe from text and applies a scaling factor

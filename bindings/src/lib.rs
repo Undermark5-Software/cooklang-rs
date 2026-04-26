@@ -64,6 +64,169 @@ pub fn parse_recipe(
     })
 }
 
+/// Scale a cached recipe and produce a display-ready recipe.
+///
+/// Clones the cached recipe, scales it to `scaling_factor`, then resolves
+/// references and pre-formats quantities for UI rendering. The cache is
+/// untouched, so multiple scale factors can be produced from the same
+/// CacheableRecipe without re-parsing source text.
+#[uniffi::export]
+pub fn scale_recipe(recipe: &Arc<CacheableRecipe>, scaling_factor: f64) -> DisplayRecipe {
+    let mut scaled = recipe.recipe.clone();
+    let converter = cooklang::Converter::bundled();
+    scaled.scale(scaling_factor, &converter);
+    to_display_recipe(&scaled, &converter)
+}
+
+fn to_display_recipe(
+    recipe: &cooklang::Recipe,
+    converter: &cooklang::Converter,
+) -> DisplayRecipe {
+    let metadata: std::collections::HashMap<String, String> = recipe
+        .metadata
+        .map
+        .iter()
+        .filter_map(|(key, value)| {
+            let k = key.as_str()?;
+            let v = value.as_str().unwrap_or("").to_string();
+            Some((k.to_string(), v))
+        })
+        .collect();
+
+    let ingredients: Vec<DisplayIngredient> = recipe
+        .group_ingredients(converter)
+        .iter()
+        .map(|gi| {
+            let grouped_quantity = if gi.quantity.is_empty() {
+                None
+            } else {
+                Some(gi.quantity.to_string())
+            };
+            DisplayIngredient {
+                name: gi.ingredient.name.clone(),
+                display_name: gi.ingredient.display_name().into_owned(),
+                grouped_quantity,
+                descriptor: gi.ingredient.note.clone(),
+            }
+        })
+        .collect();
+
+    let cookware: Vec<DisplayCookware> = recipe
+        .group_cookware(converter)
+        .iter()
+        .map(|gc| {
+            let grouped_quantity = if gc.quantity.is_empty() {
+                None
+            } else {
+                Some(gc.quantity.to_string())
+            };
+            DisplayCookware {
+                name: gc.cookware.name.clone(),
+                display_name: gc.cookware.display_name().to_owned(),
+                grouped_quantity,
+                note: gc.cookware.note.clone(),
+            }
+        })
+        .collect();
+
+    let timers: Vec<DisplayTimer> = recipe
+        .timers
+        .iter()
+        .map(|t| DisplayTimer {
+            name: t.name.clone(),
+            formatted_duration: t
+                .quantity
+                .as_ref()
+                .map(|q| format_amount(&q.extract_amount())),
+        })
+        .collect();
+
+    let mut step_number: u32 = 0;
+    let sections: Vec<DisplaySection> = recipe
+        .sections
+        .iter()
+        .map(|section| {
+            let blocks: Vec<DisplayBlock> = section
+                .content
+                .iter()
+                .map(|content| match content {
+                    cooklang::Content::Step(step) => {
+                        step_number += 1;
+                        DisplayBlock::Step(DisplayStep {
+                            number: step_number,
+                            items: expand_step_items(step, recipe),
+                        })
+                    }
+                    cooklang::Content::Text(text) => DisplayBlock::Note {
+                        text: text.to_string(),
+                    },
+                })
+                .collect();
+            DisplaySection {
+                title: section.name.clone(),
+                blocks,
+            }
+        })
+        .collect();
+
+    DisplayRecipe {
+        metadata,
+        ingredients,
+        cookware,
+        timers,
+        sections,
+    }
+}
+
+fn expand_step_items(step: &cooklang::model::Step, recipe: &cooklang::Recipe) -> Vec<DisplayItem> {
+    step.items
+        .iter()
+        .map(|item| match item {
+            cooklang::model::Item::Text { value } => DisplayItem::Text {
+                value: value.to_string(),
+            },
+            cooklang::model::Item::Ingredient { index } => {
+                let ingredient = &recipe.ingredients[*index];
+                DisplayItem::Ingredient {
+                    display_name: ingredient.display_name().into_owned(),
+                    formatted_quantity: ingredient
+                        .quantity
+                        .as_ref()
+                        .map(|q| format_amount(&q.extract_amount())),
+                    descriptor: ingredient.note.clone(),
+                }
+            }
+            cooklang::model::Item::Cookware { index } => {
+                let cookware = &recipe.cookware[*index];
+                DisplayItem::Cookware {
+                    display_name: cookware.display_name().to_owned(),
+                    formatted_quantity: cookware
+                        .quantity
+                        .as_ref()
+                        .map(|q| format_amount(&q.extract_amount())),
+                    note: cookware.note.clone(),
+                }
+            }
+            cooklang::model::Item::Timer { index } => {
+                let timer = &recipe.timers[*index];
+                DisplayItem::Timer {
+                    name: timer.name.clone(),
+                    formatted_duration: timer
+                        .quantity
+                        .as_ref()
+                        .map(|q| format_amount(&q.extract_amount())),
+                }
+            }
+            cooklang::model::Item::InlineQuantity { index } => {
+                let inline = &recipe.inline_quantities[*index];
+                DisplayItem::Text {
+                    value: format_amount(&inline.extract_amount()),
+                }
+            }
+        })
+        .collect()
+}
+
 /// Dereferences a component reference to get the actual component
 ///
 /// # Arguments
@@ -737,6 +900,48 @@ uniffi::setup_scaffolding!();
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn test_scale_recipe_displays_scaled_quantities_and_inline() {
+        use crate::{parse_recipe, scale_recipe, DisplayBlock, DisplayItem};
+
+        let parse_result = parse_recipe(
+            r#"Mix @flour{200%g} into a bowl, simmer for 10 minutes
+"#
+            .to_string(),
+            None,
+        )
+        .unwrap();
+
+        // Original (1.0): flour at 200 g, "10 minutes" surfaces as inline qty
+        let display = scale_recipe(&parse_result.recipe, 1.0);
+        let flour = display
+            .ingredients
+            .iter()
+            .find(|i| i.name == "flour")
+            .expect("flour ingredient");
+        assert_eq!(flour.grouped_quantity.as_deref(), Some("200 g"));
+        let DisplayBlock::Step(step) = &display.sections[0].blocks[0] else {
+            panic!("expected step")
+        };
+        // The inline "10 minutes" is rendered as a Text item with the formatted amount
+        let last = step.items.last().expect("step has items");
+        assert!(
+            matches!(last, DisplayItem::Text { value } if value == "10 minutes"),
+            "expected inline qty Text \"10 minutes\", got {:?}",
+            last,
+        );
+
+        // Doubled: flour scales to 400 g; cached recipe is untouched, so a
+        // second scale on the same handle is independent.
+        let display_2x = scale_recipe(&parse_result.recipe, 2.0);
+        let flour_2x = display_2x
+            .ingredients
+            .iter()
+            .find(|i| i.name == "flour")
+            .expect("flour ingredient");
+        assert_eq!(flour_2x.grouped_quantity.as_deref(), Some("400 g"));
+    }
 
     #[test]
     fn test_parse_recipe() {

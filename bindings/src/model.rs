@@ -111,6 +111,100 @@ impl CacheableRecipe {
     }
 }
 
+// =============================================================================
+// Display-Ready Types
+// -----------------------------------------------------------------------------
+// Pre-processed recipe shapes ready for UI rendering: references resolved
+// inline, quantities pre-formatted as strings, ingredients grouped by
+// definition with combined quantities from references.
+// =============================================================================
+
+/// A display-ready recipe with all references resolved and quantities formatted.
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct DisplayRecipe {
+    /// Raw metadata as key-value pairs
+    pub metadata: HashMap<String, String>,
+    /// Grouped ingredients (definitions only) with combined quantities
+    pub ingredients: Vec<DisplayIngredient>,
+    /// Grouped cookware (definitions only) with combined quantities
+    pub cookware: Vec<DisplayCookware>,
+    /// All timers, kept in source order
+    pub timers: Vec<DisplayTimer>,
+    /// Recipe sections with display-ready blocks
+    pub sections: Vec<DisplaySection>,
+}
+
+/// A display-ready ingredient with grouped quantity from all references.
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct DisplayIngredient {
+    pub name: String,
+    /// Display name (alias if present, otherwise name)
+    pub display_name: String,
+    /// Pre-formatted grouped quantity (e.g. "1.1 kg" or "2 cups, 1 bag")
+    pub grouped_quantity: Option<String>,
+    pub descriptor: Option<String>,
+}
+
+/// A display-ready cookware item with grouped quantity from all references.
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct DisplayCookware {
+    pub name: String,
+    pub display_name: String,
+    pub grouped_quantity: Option<String>,
+    pub note: Option<String>,
+}
+
+/// A display-ready timer with formatted duration text.
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct DisplayTimer {
+    pub name: Option<String>,
+    pub formatted_duration: Option<String>,
+}
+
+/// A display-ready section.
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct DisplaySection {
+    pub title: Option<String>,
+    pub blocks: Vec<DisplayBlock>,
+}
+
+/// A display-ready block (cooking step or text note).
+#[derive(uniffi::Enum, Debug, Clone)]
+pub enum DisplayBlock {
+    Step(DisplayStep),
+    Note { text: String },
+}
+
+/// A display-ready step with all references resolved inline.
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct DisplayStep {
+    /// 1-based step number across the whole recipe
+    pub number: u32,
+    pub items: Vec<DisplayItem>,
+}
+
+/// A display-ready item: either text or a resolved component reference.
+#[derive(uniffi::Enum, Debug, Clone)]
+pub enum DisplayItem {
+    Text {
+        value: String,
+    },
+    Ingredient {
+        display_name: String,
+        formatted_quantity: Option<String>,
+        descriptor: Option<String>,
+    },
+    Cookware {
+        display_name: String,
+        formatted_quantity: Option<String>,
+        note: Option<String>,
+    },
+    Timer {
+        name: Option<String>,
+        formatted_duration: Option<String>,
+    },
+}
+
 pub type ComponentRef = u32;
 
 /// Represents a distinct section of a recipe, optionally with a title
@@ -462,7 +556,7 @@ impl From<OriginalRecipeTime> for RecipeTime {
     }
 }
 
-trait Amountable {
+pub(crate) trait Amountable {
     fn extract_amount(&self) -> Amount;
 }
 

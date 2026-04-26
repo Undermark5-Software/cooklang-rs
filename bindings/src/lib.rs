@@ -10,29 +10,58 @@ pub mod model;
 pub mod shopping_list;
 
 use aisle::*;
-#[allow(unused_imports)]
 use error::*;
-#[allow(unused_imports)]
 use extensions::*;
 use model::*;
 
-/// Parses a Cooklang recipe from text and applies a scaling factor
+/// Result of parsing a recipe: a CacheableRecipe handle plus any warnings.
+///
+/// The recipe is stored UNSCALED so callers can scale it to any factor
+/// later via scale_recipe without re-parsing the source text.
+#[derive(uniffi::Record)]
+pub struct ParseResult {
+    pub recipe: Arc<CacheableRecipe>,
+    pub warnings: Option<DiagnosticReport>,
+}
+
+/// Parse a Cooklang recipe.
 ///
 /// # Arguments
-/// * `input` - The raw recipe text in Cooklang format
-/// * `scaling_factor` - Factor to scale ingredient quantities (1.0 for no scaling)
+/// * `input` - Recipe source text
+/// * `extensions` - Optional extension toggles. None defaults to all
+///   extensions enabled (recommended; canonical recipes parse the same
+///   regardless).
 ///
 /// # Returns
-/// A parsed recipe object with metadata, sections, ingredients, cookware and timers
+/// A ParseResult holding a CacheableRecipe and any warnings emitted
+/// during parsing.
+///
+/// # Errors
+/// Returns CooklangError::ParseError when the recipe cannot be parsed,
+/// carrying the full diagnostic report.
 #[uniffi::export]
-pub fn parse_recipe(input: String, scaling_factor: f64) -> Arc<CooklangRecipe> {
-    let parser = cooklang::CooklangParser::canonical();
-
-    let (mut parsed, _warnings) = parser.parse(&input).into_result().unwrap();
-
-    parsed.scale(scaling_factor, parser.converter());
-
-    Arc::new(into_simple_recipe(&parsed))
+pub fn parse_recipe(
+    input: String,
+    extensions: Option<Extensions>,
+) -> Result<ParseResult, CooklangError> {
+    let ext = extensions.unwrap_or_else(extensions_all);
+    let parser = cooklang::CooklangParser::new(ext.into(), cooklang::Converter::bundled());
+    let (parsed, warnings) = parser.parse(&input).into_result().map_err(|report| {
+        let error_count = report.errors().count() as u32;
+        CooklangError::ParseError {
+            errors: (&report).into(),
+            error_count,
+        }
+    })?;
+    let recipe = Arc::new(CacheableRecipe { recipe: parsed });
+    Ok(ParseResult {
+        recipe,
+        warnings: if warnings.has_warnings() {
+            Some((&warnings).into())
+        } else {
+            None
+        },
+    })
 }
 
 /// Dereferences a component reference to get the actual component
@@ -720,8 +749,8 @@ mod tests {
 a test @step @salt{1%mg} more text
 "#
             .to_string(),
-            1.0,
-        );
+            None,
+        ).unwrap().recipe.to_cooklang_recipe();
 
         assert_eq!(
             deref_component(&recipe, Item::IngredientRef { index: 1 }),
@@ -827,8 +856,8 @@ tags: easy, quick, vegetarian
 a test @step @salt{1%mg} more text
 "#
             .to_string(),
-            1.0,
-        );
+            None,
+        ).unwrap().recipe.to_cooklang_recipe();
 
         // Test title
         assert_eq!(metadata_title(&recipe), Some("Test Recipe".to_string()));
@@ -870,8 +899,8 @@ servings: 2-3 portions
 Cook something delicious
 "#
             .to_string(),
-            1.0,
-        );
+            None,
+        ).unwrap().recipe.to_cooklang_recipe();
 
         // Test author with URL
         let author = metadata_author(&recipe);
@@ -909,8 +938,8 @@ servings: 4
 Test recipe content
 "#
             .to_string(),
-            1.0,
-        );
+            None,
+        ).unwrap().recipe.to_cooklang_recipe();
 
         let custom_keys = metadata_custom_keys(&recipe);
 
@@ -1195,8 +1224,8 @@ egg | eggs
 Cook @onions{3%large} until brown
 "#
             .to_string(),
-            1.0,
-        );
+            None,
+        ).unwrap().recipe.to_cooklang_recipe();
 
         let first_section = recipe.sections.get(0).expect("No sections found");
 
@@ -1249,8 +1278,8 @@ add @tomatoes{400%g}
 simmer for 10 minutes
 "#
             .to_string(),
-            1.0,
-        );
+            None,
+        ).unwrap().recipe.to_cooklang_recipe();
         let first_section = recipe.sections.get(0).expect("No sections found");
         assert_eq!(first_section.blocks.len(), 2);
 
@@ -1275,7 +1304,8 @@ simmer for 10 minutes
             ]
         );
 
-        // Check second step
+        // Check second step. With the inline_quantities extension enabled,
+        // "10 minutes" is parsed as an inline quantity rather than trailing text.
         assert_eq!(
             match second_block {
                 Block::StepBlock(step) => step.clone(),
@@ -1288,8 +1318,9 @@ simmer for 10 minutes
                 },
                 Item::IngredientRef { index: 1 },
                 Item::Text {
-                    value: " simmer for 10 minutes".to_string()
-                }
+                    value: " simmer for ".to_string()
+                },
+                Item::InlineQuantityRef { index: 0 },
             ]
         );
     }
@@ -1309,8 +1340,8 @@ Mix @flour{200%g} and @water{50%ml} together until smooth.
 Combine @cheese{100%g} and @spinach{50%g}, then season to taste.
 "#
             .to_string(),
-            1.0,
-        );
+            None,
+        ).unwrap().recipe.to_cooklang_recipe();
 
         let sections = &recipe.sections;
 
@@ -1527,8 +1558,8 @@ Combine @cheese{100%g} and @spinach{50%g}, then season to taste.
 Serve the @./pasta/spaghetti{1%portion} with sauce
 "#
             .to_string(),
-            1.0,
-        );
+            None,
+        ).unwrap().recipe.to_cooklang_recipe();
 
         let ingredient = recipe.ingredients.get(0).expect("No ingredients found");
 

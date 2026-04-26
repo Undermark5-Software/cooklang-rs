@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use cooklang::metadata::{
     NameAndUrl as OriginalNameAndUrl, RecipeTime as OriginalRecipeTime,
@@ -46,6 +47,67 @@ impl CooklangRecipe {
     /// Returns all inline quantities embedded in step text
     pub fn inline_quantities(&self) -> Vec<Amount> {
         self.inline_quantities.clone()
+    }
+}
+
+/// Wraps an internal cooklang::Recipe for caching scenarios.
+///
+/// CacheableRecipe is the parse-once / scale-many primitive: parsing is
+/// expensive, so consumers (e.g. server-side recipe repositories) hold
+/// onto a CacheableRecipe and produce DisplayRecipes via scale_recipe at
+/// each request without re-parsing the source text.
+#[derive(uniffi::Object, Debug)]
+pub struct CacheableRecipe {
+    pub(crate) recipe: cooklang::Recipe,
+}
+
+#[uniffi::export]
+impl CacheableRecipe {
+    /// Returns a fresh Arc<CacheableRecipe> backed by an independent clone
+    /// of the wrapped recipe. Useful for in-place scaling when the caller
+    /// wants to keep the original untouched.
+    pub fn clone_recipe(self: Arc<Self>) -> Arc<CacheableRecipe> {
+        Arc::new(CacheableRecipe {
+            recipe: self.recipe.clone(),
+        })
+    }
+
+    /// Convert to the simplified CooklangRecipe shape (sections, components).
+    pub fn to_cooklang_recipe(&self) -> Arc<CooklangRecipe> {
+        Arc::new(into_simple_recipe(&self.recipe))
+    }
+
+    /// Raw metadata as a string-to-string map (only entries whose key and
+    /// value are both strings are returned).
+    pub fn metadata(&self) -> HashMap<String, String> {
+        self.recipe
+            .metadata
+            .map
+            .iter()
+            .filter_map(|(key, value)| {
+                let k = key.as_str()?;
+                let v = value.as_str().unwrap_or("").to_string();
+                Some((k.to_string(), v))
+            })
+            .collect()
+    }
+
+    /// Tags from recipe metadata, if present.
+    pub fn tags(&self) -> Vec<String> {
+        self.recipe
+            .metadata
+            .tags()
+            .map(|tags| tags.into_iter().map(|t| t.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Get a single metadata value by key (only string-typed values).
+    pub fn metadata_get(&self, key: String) -> Option<String> {
+        self.recipe
+            .metadata
+            .get(&key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     }
 }
 

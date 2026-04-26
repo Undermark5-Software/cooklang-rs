@@ -16,6 +16,9 @@ pub struct CooklangRecipe {
     pub ingredients: Vec<Ingredient>,
     pub cookware: Vec<Cookware>,
     pub timers: Vec<Timer>,
+    /// Inline quantities found in step text (e.g. "simmer for 10 minutes").
+    /// Populated when the inline_quantities extension is enabled.
+    pub inline_quantities: Vec<Amount>,
 }
 
 #[uniffi::export]
@@ -38,6 +41,11 @@ impl CooklangRecipe {
     /// Returns all timers in the recipe
     pub fn timers(&self) -> Vec<Timer> {
         self.timers.clone()
+    }
+
+    /// Returns all inline quantities embedded in step text
+    pub fn inline_quantities(&self) -> Vec<Amount> {
+        self.inline_quantities.clone()
     }
 }
 
@@ -67,6 +75,7 @@ pub enum Component {
     CookwareComponent(Cookware),
     TimerComponent(Timer),
     TextComponent(String),
+    InlineQuantityComponent(Amount),
 }
 
 /// Represents a single cooking instruction step
@@ -194,6 +203,7 @@ pub enum Item {
     IngredientRef { index: ComponentRef },
     CookwareRef { index: ComponentRef },
     TimerRef { index: ComponentRef },
+    InlineQuantityRef { index: ComponentRef },
 }
 
 pub type IngredientList = HashMap<String, GroupedQuantity>;
@@ -544,9 +554,8 @@ pub(crate) fn into_item(item: &OriginalItem) -> Item {
         OriginalItem::Timer { index } => Item::TimerRef {
             index: *index as u32,
         },
-        // returning an empty block of text as it's not supported by the spec
-        OriginalItem::InlineQuantity { index: _ } => Item::Text {
-            value: "".to_string(),
+        OriginalItem::InlineQuantity { index } => Item::InlineQuantityRef {
+            index: *index as u32,
         },
     }
 }
@@ -556,6 +565,11 @@ pub(crate) fn into_simple_recipe(recipe: &OriginalRecipe) -> CooklangRecipe {
     let ingredients: Vec<Ingredient> = recipe.ingredients.iter().map(|i| i.into()).collect();
     let cookware: Vec<Cookware> = recipe.cookware.iter().map(|i| i.into()).collect();
     let timers: Vec<Timer> = recipe.timers.iter().map(|i| i.into()).collect();
+    let inline_quantities: Vec<Amount> = recipe
+        .inline_quantities
+        .iter()
+        .map(|q| q.extract_amount())
+        .collect();
     let mut sections: Vec<Section> = Vec::new();
 
     // Process each section
@@ -628,6 +642,7 @@ pub(crate) fn into_simple_recipe(recipe: &OriginalRecipe) -> CooklangRecipe {
         ingredients,
         cookware,
         timers,
+        inline_quantities,
     }
 }
 

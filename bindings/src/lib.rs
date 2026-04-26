@@ -55,6 +55,13 @@ pub fn deref_component(recipe: &Arc<CooklangRecipe>, item: Item) -> Component {
         Item::TimerRef { index } => {
             Component::TimerComponent(recipe.timers.get(index as usize).unwrap().clone())
         }
+        Item::InlineQuantityRef { index } => Component::InlineQuantityComponent(
+            recipe
+                .inline_quantities
+                .get(index as usize)
+                .unwrap()
+                .clone(),
+        ),
         Item::Text { value } => Component::TextComponent(value),
     }
 }

@@ -705,7 +705,7 @@ mod tests {
     #[test]
     fn test_parse_recipe() {
         use crate::{
-            deref_component, parse_recipe, Amount, Block, Component, Ingredient, Item, Value,
+            deref_component, parse_recipe, Amount, Block, Component, ComponentRelationType, Ingredient, IngredientRelation, Item, Value,
         };
 
         let recipe = parse_recipe(
@@ -720,12 +720,20 @@ a test @step @salt{1%mg} more text
             deref_component(&recipe, Item::IngredientRef { index: 1 }),
             Component::IngredientComponent(Ingredient {
                 name: "salt".to_string(),
+                alias: None,
                 amount: Some(Amount {
                     quantity: Value::Number { value: 1.0 },
                     units: Some("mg".to_string())
                 }),
                 descriptor: None,
-                reference: None
+                reference: None,
+                relation: IngredientRelation {
+                    relation_type: ComponentRelationType::Definition {
+                        referenced_from: vec![],
+                        defined_in_step: true,
+                    },
+                    reference_target: None,
+                },
             })
         );
 
@@ -762,18 +770,34 @@ a test @step @salt{1%mg} more text
             vec![
                 Ingredient {
                     name: "step".to_string(),
+                    alias: None,
                     amount: None,
                     descriptor: None,
-                    reference: None
+                    reference: None,
+                    relation: IngredientRelation {
+                        relation_type: ComponentRelationType::Definition {
+                            referenced_from: vec![],
+                            defined_in_step: true,
+                        },
+                        reference_target: None,
+                    },
                 },
                 Ingredient {
                     name: "salt".to_string(),
+                    alias: None,
                     amount: Some(Amount {
                         quantity: Value::Number { value: 1.0 },
                         units: Some("mg".to_string())
                     }),
                     descriptor: None,
-                    reference: None
+                    reference: None,
+                    relation: IngredientRelation {
+                        relation_type: ComponentRelationType::Definition {
+                            referenced_from: vec![],
+                            defined_in_step: true,
+                        },
+                        reference_target: None,
+                    },
                 },
             ]
         );
@@ -943,46 +967,78 @@ dried oregano
     #[test]
     fn test_combine_ingredients() {
         use crate::{
-            combine_ingredients, Amount, GroupedQuantityKey, Ingredient, QuantityType, Value,
+            combine_ingredients, Amount, GroupedQuantityKey, ComponentRelationType, Ingredient, IngredientRelation, QuantityType, Value,
         };
         use std::collections::HashMap;
 
         let ingredients = vec![
             Ingredient {
                 name: "salt".to_string(),
+                alias: None,
                 amount: Some(Amount {
                     quantity: Value::Number { value: 5.0 },
                     units: Some("g".to_string()),
                 }),
                 descriptor: None,
                 reference: None,
+                relation: IngredientRelation {
+                    relation_type: ComponentRelationType::Definition {
+                        referenced_from: vec![],
+                        defined_in_step: true,
+                    },
+                    reference_target: None,
+                },
             },
             Ingredient {
                 name: "pepper".to_string(),
+                alias: None,
                 amount: Some(Amount {
                     quantity: Value::Number { value: 5.0 },
                     units: Some("mg".to_string()),
                 }),
                 descriptor: None,
                 reference: None,
+                relation: IngredientRelation {
+                    relation_type: ComponentRelationType::Definition {
+                        referenced_from: vec![],
+                        defined_in_step: true,
+                    },
+                    reference_target: None,
+                },
             },
             Ingredient {
                 name: "salt".to_string(),
+                alias: None,
                 amount: Some(Amount {
                     quantity: Value::Number { value: 0.005 },
                     units: Some("kg".to_string()),
                 }),
                 descriptor: None,
                 reference: None,
+                relation: IngredientRelation {
+                    relation_type: ComponentRelationType::Definition {
+                        referenced_from: vec![],
+                        defined_in_step: true,
+                    },
+                    reference_target: None,
+                },
             },
             Ingredient {
                 name: "pepper".to_string(),
+                alias: None,
                 amount: Some(Amount {
                     quantity: Value::Number { value: 1.0 },
                     units: Some("tsp".to_string()),
                 }),
                 descriptor: None,
                 reference: None,
+                relation: IngredientRelation {
+                    relation_type: ComponentRelationType::Definition {
+                        referenced_from: vec![],
+                        defined_in_step: true,
+                    },
+                    reference_target: None,
+                },
             },
         ];
 
@@ -1032,36 +1088,60 @@ dried oregano
     #[test]
     fn test_use_common_names() {
         use crate::{
-            combine_ingredients, parse_aisle_config, use_common_names, Amount, Ingredient, Value,
+            combine_ingredients, parse_aisle_config, use_common_names, Amount, ComponentRelationType, Ingredient, IngredientRelation, Value,
         };
 
         let ingredients = vec![
             Ingredient {
                 name: "apples".to_string(),
+                alias: None,
                 amount: Some(Amount {
                     quantity: Value::Number { value: 3.0 },
                     units: None,
                 }),
                 descriptor: None,
                 reference: None,
+                relation: IngredientRelation {
+                    relation_type: ComponentRelationType::Definition {
+                        referenced_from: vec![],
+                        defined_in_step: true,
+                    },
+                    reference_target: None,
+                },
             },
             Ingredient {
                 name: "eggs".to_string(),
+                alias: None,
                 amount: Some(Amount {
                     quantity: Value::Number { value: 2.0 },
                     units: None,
                 }),
                 descriptor: None,
                 reference: None,
+                relation: IngredientRelation {
+                    relation_type: ComponentRelationType::Definition {
+                        referenced_from: vec![],
+                        defined_in_step: true,
+                    },
+                    reference_target: None,
+                },
             },
             Ingredient {
                 name: "salt".to_string(),
+                alias: None,
                 amount: Some(Amount {
                     quantity: Value::Number { value: 1.0 },
                     units: Some("tsp".to_string()),
                 }),
                 descriptor: None,
                 reference: None,
+                relation: IngredientRelation {
+                    relation_type: ComponentRelationType::Definition {
+                        referenced_from: vec![],
+                        defined_in_step: true,
+                    },
+                    reference_target: None,
+                },
             },
         ];
 

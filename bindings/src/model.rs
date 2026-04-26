@@ -113,17 +113,71 @@ impl From<&OriginalRecipeReference> for RecipeReference {
 #[derive(uniffi::Record, Debug, PartialEq, Clone)]
 pub struct Ingredient {
     pub name: String,
+    /// Alternate name from cooklang's @name|alias{} syntax
+    pub alias: Option<String>,
     pub amount: Option<Amount>,
     pub descriptor: Option<String>,
     /// Reference to another recipe file, if this ingredient is a recipe reference
     pub reference: Option<RecipeReference>,
+    /// How this ingredient relates to other ingredients (definition / reference)
+    pub relation: IngredientRelation,
+}
+
+/// Relation between an ingredient and other ingredients in the recipe.
+///
+/// Wraps cooklang::model::IngredientRelation, which tracks whether the
+/// ingredient is a definition (with possible incoming references) or a
+/// reference (and what it references).
+#[derive(uniffi::Record, Debug, PartialEq, Clone)]
+pub struct IngredientRelation {
+    pub relation_type: ComponentRelationType,
+    /// Target the reference points to. Only Some when relation_type is Reference.
+    pub reference_target: Option<IngredientReferenceTarget>,
+}
+
+/// Whether a component is a definition or a reference, plus the related indices.
+#[derive(uniffi::Enum, Debug, PartialEq, Clone)]
+pub enum ComponentRelationType {
+    /// The component is a definition that may be referenced by others
+    Definition {
+        /// Indices of other components of the same kind that reference this one
+        referenced_from: Vec<u32>,
+        /// True when defined inside a step (false only in components mode)
+        defined_in_step: bool,
+    },
+    /// The component is a reference to another component
+    Reference {
+        /// Index of the definition this references
+        references_to: u32,
+    },
+}
+
+/// Target an ingredient reference points to (ingredient, step, or section).
+#[derive(uniffi::Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum IngredientReferenceTarget {
+    Ingredient,
+    Step,
+    Section,
 }
 
 /// Represents a piece of cookware used in the recipe
 #[derive(uniffi::Record, Debug, PartialEq, Clone)]
 pub struct Cookware {
     pub name: String,
+    pub alias: Option<String>,
     pub amount: Option<Amount>,
+    pub note: Option<String>,
+    pub relation: ComponentRelation,
+}
+
+/// Relation between a cookware item and other cookware in the recipe.
+///
+/// Wraps cooklang::model::ComponentRelation. Cookware can be a definition
+/// or a reference (to another cookware definition), but cannot point at
+/// steps or sections, so there is no reference_target.
+#[derive(uniffi::Record, Debug, PartialEq, Clone)]
+pub struct ComponentRelation {
+    pub relation_type: ComponentRelationType,
 }
 
 /// Represents a timer in the recipe
@@ -581,9 +635,11 @@ impl From<&cooklang::Ingredient> for Ingredient {
     fn from(ingredient: &cooklang::Ingredient) -> Self {
         Ingredient {
             name: ingredient.name.clone(),
+            alias: ingredient.alias.clone(),
             amount: ingredient.quantity.as_ref().map(|q| q.extract_amount()),
             descriptor: ingredient.note.clone(),
             reference: ingredient.reference.as_ref().map(|r| r.into()),
+            relation: (&ingredient.relation).into(),
         }
     }
 }
@@ -592,7 +648,75 @@ impl From<&cooklang::Cookware> for Cookware {
     fn from(cookware: &cooklang::Cookware) -> Self {
         Cookware {
             name: cookware.name.clone(),
+            alias: cookware.alias.clone(),
             amount: cookware.quantity.as_ref().map(|q| q.extract_amount()),
+            note: cookware.note.clone(),
+            relation: (&cookware.relation).into(),
+        }
+    }
+}
+
+impl From<&cooklang::model::IngredientRelation> for IngredientRelation {
+    fn from(relation: &cooklang::model::IngredientRelation) -> Self {
+        if let Some((index, target)) = relation.references_to() {
+            let target = match target {
+                cooklang::model::IngredientReferenceTarget::Ingredient => {
+                    IngredientReferenceTarget::Ingredient
+                }
+                cooklang::model::IngredientReferenceTarget::Step => {
+                    IngredientReferenceTarget::Step
+                }
+                cooklang::model::IngredientReferenceTarget::Section => {
+                    IngredientReferenceTarget::Section
+                }
+            };
+            IngredientRelation {
+                relation_type: ComponentRelationType::Reference {
+                    references_to: index as u32,
+                },
+                reference_target: Some(target),
+            }
+        } else {
+            let referenced_from: Vec<u32> = relation
+                .referenced_from()
+                .iter()
+                .map(|&i| i as u32)
+                .collect();
+            let defined_in_step = relation.is_defined_in_step().unwrap_or(true);
+            IngredientRelation {
+                relation_type: ComponentRelationType::Definition {
+                    referenced_from,
+                    defined_in_step,
+                },
+                reference_target: None,
+            }
+        }
+    }
+}
+
+impl From<&cooklang::model::ComponentRelation> for ComponentRelationType {
+    fn from(relation: &cooklang::model::ComponentRelation) -> Self {
+        match relation {
+            cooklang::model::ComponentRelation::Definition {
+                referenced_from,
+                defined_in_step,
+            } => ComponentRelationType::Definition {
+                referenced_from: referenced_from.iter().map(|&i| i as u32).collect(),
+                defined_in_step: *defined_in_step,
+            },
+            cooklang::model::ComponentRelation::Reference { references_to } => {
+                ComponentRelationType::Reference {
+                    references_to: *references_to as u32,
+                }
+            }
+        }
+    }
+}
+
+impl From<&cooklang::model::ComponentRelation> for ComponentRelation {
+    fn from(relation: &cooklang::model::ComponentRelation) -> Self {
+        ComponentRelation {
+            relation_type: relation.into(),
         }
     }
 }

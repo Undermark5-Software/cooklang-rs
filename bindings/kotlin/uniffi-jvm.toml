@@ -1,0 +1,9 @@
+# Global uniffi-bindgen config used only by the JVM test harness.
+#
+# The crate's own `bindings/uniffi.toml` is always applied (package name, etc.);
+# this layer only flips off Android-specific codegen (android.os.Build,
+# android.system.SystemCleaner, androidx annotations) so the generated Kotlin
+# can run on a plain JVM. The public API is otherwise identical to the Android
+# artifact.
+[crates.cooklang_bindings.bindings.kotlin]
+android = false

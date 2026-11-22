@@ -463,6 +463,29 @@ Not all categories from AisleConfig are referenced in a shopping list. There cou
 ```
 
 
+## Testing the Kotlin bindings
+
+`bindings/kotlin` is a small Gradle project that tests the generated Kotlin on a plain JVM:
+
+    cd bindings/kotlin
+    ./gradlew test
+
+It builds the host library with cargo, generates Kotlin with `uniffi-bindgen` (using
+`uniffi-jvm.toml` to turn off Android-only codegen; the API is otherwise the same as the
+published Android artifact), and runs the tests through JNA. Requires Rust and a JDK 17+.
+
+## Testing the Swift bindings
+
+On macOS, run:
+
+    ./bindings/test-swift.sh
+
+It builds the host library, regenerates the Swift wrapper, packages a local macOS-only
+`CooklangParserFFI.xcframework`, and runs `swift test` against it with
+`USE_LOCAL_XCFRAMEWORK=1`. The committed `swift/Sources/CooklangParser/CooklangParser.swift`
+is restored afterwards (set `KEEP_WRAPPER=1` to keep the regenerated one). The tests in
+`swift/Tests` mirror the Kotlin ones in `bindings/kotlin/src/test`.
+
 ## Building for Android
 
 ### Prepare

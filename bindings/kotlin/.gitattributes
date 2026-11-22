@@ -1,0 +1,4 @@
+# Keep the Gradle wrapper scripts runnable on their platforms regardless of core.autocrlf.
+/gradlew        text eol=lf
+*.bat           text eol=crlf
+*.jar           binary

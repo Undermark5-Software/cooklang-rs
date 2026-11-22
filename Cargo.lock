@@ -307,6 +307,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cooklang-kmp"
+version = "0.19.0"
+dependencies = [
+ "cooklang",
+ "serde_yaml",
+ "thiserror",
+ "uniffi",
+]
+
+[[package]]
 name = "cooklang-wasm"
 version = "0.1.0"
 dependencies = [

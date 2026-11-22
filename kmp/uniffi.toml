@@ -1,0 +1,5 @@
+# oxikt reads these keys at the top level (not under [bindings.kotlin]).
+package_name = "org.cooklang"
+generate_immutable_records = true
+# Match the Kotlin version in gradle/libs.versions.toml (only >= 1.9.0 matters: enums use `entries`).
+kotlin_target_version = "2.4.21"

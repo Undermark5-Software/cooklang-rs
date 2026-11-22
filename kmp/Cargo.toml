@@ -1,0 +1,19 @@
+[package]
+name = "cooklang-kmp"
+version = "0.19.0"
+edition = "2021"
+description = "Kotlin Multiplatform bindings for cooklang, generated with UniFFI + oxikt"
+license = "MIT"
+publish = false
+
+[lib]
+name = "cooklang_kmp"
+# cdylib for JVM/Android (loaded via JNA), staticlib for Kotlin/Native.
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+cooklang = { path = "..", default-features = false, features = ["aisle", "shopping_list"] }
+serde_yaml = "0.9.34"
+thiserror = "2"
+# Must stay on the 0.32 line that oxikt's generator targets.
+uniffi = "0.32"

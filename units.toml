@@ -67,7 +67,7 @@ metric = [
 ]
 imperial = [
     { names = ["ounce", "ounces"], symbols = ["oz", "oz."], ratio = 28.349_523_125 },
-    { names = ["pound", "pounds"], symbols = ["lb", "lb."], ratio = 453.592_37 },
+    { names = ["pound", "pounds"], symbols = ["lb", "lb."], aliases = ["lbs"], ratio = 453.592_37 },
 ]
 
 [[quantity]]

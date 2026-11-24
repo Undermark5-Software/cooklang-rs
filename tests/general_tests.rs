@@ -443,3 +443,14 @@ fn m_is_still_meters_outside_times() {
         cooklang::convert::PhysicalQuantity::Length
     );
 }
+
+#[test]
+fn bundled_unit_aliases() {
+    let converter = cooklang::Converter::bundled();
+    for (alias, name) in [("lbs", "pound"), ("hr", "hour"), ("hrs", "hour")] {
+        let unit = converter
+            .find_unit(alias)
+            .unwrap_or_else(|| panic!("{alias} is unknown"));
+        assert_eq!(&*unit.names[0], name, "{alias}");
+    }
+}

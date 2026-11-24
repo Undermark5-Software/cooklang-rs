@@ -28,14 +28,14 @@ pub use shopping_list::*;
 /// Throws `CooklangException.Parse` if the recipe has errors; warnings are in
 /// [`Recipe::warnings`].
 ///
-/// Parses standard Cooklang, plus timers written as durations, like `~{1h20m}` or
-/// `~{1-3 seconds}`. Every timer in a time unit has a [`recipe::TimerDuration`].
+/// Parses with every cooklang-rs extension and the bundled units, so ranges, modifiers,
+/// intermediate preparations and timers written as durations (`~{1h20m}`) all work.
+/// Scaling fits amounts to the best unit, e.g. `3 tsp` becomes `1 tbsp`. Every timer in
+/// a time unit has a [`recipe::TimerDuration`].
 #[uniffi::export(default(scale = 1.0))]
 pub fn parse_recipe(input: String, scale: f64) -> Result<Recipe, CooklangError> {
-    let parser = cooklang::CooklangParser::new(
-        cooklang::Extensions::TIMER_DURATIONS,
-        cooklang::Converter::empty(),
-    );
+    let parser =
+        cooklang::CooklangParser::new(cooklang::Extensions::all(), cooklang::Converter::bundled());
     let (mut parsed, report) = parser
         .parse(&input)
         .into_result()
@@ -44,7 +44,12 @@ pub fn parse_recipe(input: String, scale: f64) -> Result<Recipe, CooklangError> 
 
     let metadata = metadata::convert(&parsed.metadata, parser.converter());
     let warnings = diagnostics::diagnostics(&report, &input);
-    Ok(recipe::convert(&parsed, metadata, warnings))
+    Ok(recipe::convert(
+        &parsed,
+        parser.converter(),
+        metadata,
+        warnings,
+    ))
 }
 
 /// Converts a count or index to Kotlin's `Int`, saturating on overflow.
@@ -105,7 +110,8 @@ mod tests {
             reason,
             diagnostics,
         } = err;
-        assert_eq!(reason, "Invalid timer: neither quantity nor name");
+        // Timers must have a time.
+        assert_eq!(reason, "Invalid timer: missing quantity");
         let error = &diagnostics[0];
         assert_eq!(error.severity, Severity::Error);
         let span = error.labels[0].span;
@@ -157,13 +163,11 @@ mod tests {
     #[test]
     fn timers_have_durations() {
         let recipe = parse_recipe(
-            "Bake for ~{1h20m-1h25m}, rest for ~{10%min}, then ~{30%sec}. Wait ~{a while}.".into(),
+            "Bake for ~{1h20m-1h25m}, rest for ~{10%min}, then ~{30%sec}, ~{2%hrs}, ~{5%m}, ~{1h 5m 3s}.".into(),
             1.0,
         )
         .unwrap();
-        // Only the text timer warns.
-        let warnings: Vec<_> = recipe.warnings.iter().map(|w| w.message.as_str()).collect();
-        assert_eq!(warnings, ["Invalid timer quantity: missing unit"]);
+        assert!(recipe.warnings.is_empty(), "{:?}", recipe.warnings);
         let durations: Vec<_> = recipe.timers.iter().map(|t| t.duration).collect();
         let d = |start_seconds, end_seconds| {
             Some(recipe::TimerDuration {
@@ -172,11 +176,85 @@ mod tests {
             })
         };
         assert_eq!(
-            durations[..3],
-            [d(4800.0, 5100.0), d(600.0, 600.0), d(30.0, 30.0)]
+            durations,
+            [
+                d(4800.0, 5100.0),
+                d(600.0, 600.0),
+                d(30.0, 30.0),
+                d(7200.0, 7200.0),
+                d(300.0, 300.0),
+                d(3903.0, 3903.0)
+            ]
         );
-        // Text with no unit stays text, with no duration.
-        assert_eq!(durations[3], None);
+    }
+
+    #[test]
+    fn timers_that_arent_times_are_errors() {
+        for (input, expected) in [
+            ("Wait ~{a while}.", "Timer value is text: a while"),
+            ("Wait ~{2%cups}.", "Timer unit is not time: c"),
+            ("Wait ~{1%week}.", "Unknown timer unit: week"),
+        ] {
+            let CooklangError::Parse { reason, .. } = parse_recipe(input.into(), 1.0).unwrap_err();
+            assert_eq!(reason, expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn ranges_scale_and_units_fit() {
+        let recipe =
+            parse_recipe("Add @salt{1-2%tsp} and @sugar{3%teaspoons}.".into(), 2.0).unwrap();
+        let amounts: Vec<_> = recipe
+            .ingredients
+            .iter()
+            .map(|i| i.amount.as_ref().unwrap().format())
+            .collect();
+        assert_eq!(amounts, ["2 - 4 tsp", "2 tbsp"]);
+    }
+
+    #[test]
+    fn relations_and_the_ingredient_list() {
+        let recipe = parse_recipe(
+            "Mix @flour{200%g} and @-salt{1%tsp}.\n\n\
+             Add @&flour{50%g} and @&(~1)dough{}."
+                .into(),
+            1.0,
+        )
+        .unwrap();
+        assert!(recipe.warnings.is_empty(), "{:?}", recipe.warnings);
+        use recipe::IngredientRelation as R;
+        let relations: Vec<_> = recipe
+            .ingredients
+            .iter()
+            .map(|i| i.relation.clone())
+            .collect();
+        assert_eq!(
+            relations,
+            [
+                R::Definition {
+                    referenced_from: vec![2]
+                },
+                R::Definition {
+                    referenced_from: vec![]
+                },
+                R::Ingredient { index: 0 },
+                R::Step {
+                    section: 0,
+                    block: 0
+                },
+            ]
+        );
+        assert!(recipe.ingredients[1].hidden);
+        // Flour once, with both amounts; salt is hidden and dough is what step 1 made.
+        let list: Vec<_> = recipe
+            .ingredient_list
+            .iter()
+            .map(|l| {
+                let amounts: Vec<_> = l.amounts.iter().map(|a| a.format()).collect();
+                (recipe.ingredients[l.index as usize].name.clone(), amounts)
+            })
+            .collect();
+        assert_eq!(list, [("flour".to_string(), vec!["250 g".to_string()])]);
     }
 
     #[test]

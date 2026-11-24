@@ -12,7 +12,7 @@ name = "cooklang_kmp"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-cooklang = { path = "..", default-features = false, features = ["aisle", "shopping_list"] }
+cooklang = { path = "..", default-features = false, features = ["aisle", "bundled_units", "shopping_list"] }
 serde_yaml = "0.9.34"
 thiserror = "2"
 # Must stay on the 0.32 line that oxikt's generator targets.

@@ -4,7 +4,7 @@ use cooklang::model as core;
 
 use crate::diagnostics::Diagnostic;
 use crate::metadata::Metadata;
-use crate::quantity::{Amount, Value};
+use crate::quantity::Amount;
 
 /// A parsed Cooklang recipe.
 ///
@@ -17,6 +17,10 @@ pub struct Recipe {
     /// section without a name.
     pub sections: Vec<Section>,
     pub ingredients: Vec<Ingredient>,
+    /// The recipe's ingredient list: each ingredient once, in recipe order, with the
+    /// amounts of every place it's used added up. Leaves out hidden ingredients
+    /// (`@-name`), and references to other ingredients or to what a step made.
+    pub ingredient_list: Vec<ListedIngredient>,
     pub cookware: Vec<Cookware>,
     pub timers: Vec<Timer>,
     /// Quantities written inline in step text.
@@ -80,6 +84,34 @@ pub struct Ingredient {
     pub reference: Option<RecipeReference>,
     /// Marked optional with `@?name`.
     pub optional: bool,
+    /// Marked hidden with `@-name`: shown in its step, but not in ingredient lists.
+    pub hidden: bool,
+    pub relation: IngredientRelation,
+}
+
+/// How an ingredient relates to the recipe's other ingredients, steps and sections.
+#[derive(uniffi::Enum, Debug, Clone, PartialEq)]
+pub enum IngredientRelation {
+    /// The ingredient's first use. `referenced_from` holds the indexes, in
+    /// [`Recipe::ingredients`], of later uses that refer back to it (`@&name`).
+    Definition { referenced_from: Vec<i32> },
+    /// The same ingredient as [`Recipe::ingredients`] at `index`, used again (`@&name`).
+    Ingredient { index: i32 },
+    /// What a step made, like `@&(~1)mixture`: the step at `block` in the blocks of
+    /// [`Recipe::sections`] at `section`.
+    Step { section: i32, block: i32 },
+    /// What a whole section made, like `@&(=2)sauce`: [`Recipe::sections`] at `index`.
+    Section { index: i32 },
+}
+
+/// One entry of [`Recipe::ingredient_list`].
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct ListedIngredient {
+    /// The ingredient's first use, in [`Recipe::ingredients`].
+    pub index: i32,
+    /// The total amount. More than one when the amounts can't be added, like
+    /// `2 cups` and `a pinch`. Empty if no use gives an amount.
+    pub amounts: Vec<Amount>,
 }
 
 /// A piece of cookware used in the recipe.
@@ -92,6 +124,11 @@ pub struct Cookware {
     pub note: Option<String>,
     /// Marked optional with `#?name`.
     pub optional: bool,
+    /// Marked hidden with `#-name`: shown in its step, but not in cookware lists.
+    pub hidden: bool,
+    /// For a later use of cookware (`#&pan`), the index of its first use in
+    /// [`Recipe::cookware`].
+    pub references: Option<i32>,
 }
 
 /// A timer in the recipe.
@@ -137,15 +174,43 @@ impl RecipeReference {
 
 pub(crate) fn convert(
     recipe: &cooklang::Recipe,
+    converter: &cooklang::Converter,
     metadata: Metadata,
     warnings: Vec<Diagnostic>,
 ) -> Recipe {
+    // The section each ingredient appears in, to place references to its steps.
+    let mut ingredient_sections = vec![0; recipe.ingredients.len()];
+    for (section_index, section) in recipe.sections.iter().enumerate() {
+        for content in &section.content {
+            if let core::Content::Step(step) = content {
+                for item in &step.items {
+                    if let core::Item::Ingredient { index } = item {
+                        ingredient_sections[*index] = section_index;
+                    }
+                }
+            }
+        }
+    }
     Recipe {
         metadata,
         sections: recipe.sections.iter().map(section).collect(),
-        ingredients: recipe.ingredients.iter().map(ingredient).collect(),
+        ingredients: recipe
+            .ingredients
+            .iter()
+            .zip(&ingredient_sections)
+            .map(|(i, section)| ingredient(i, *section))
+            .collect(),
+        ingredient_list: recipe
+            .group_ingredients(converter)
+            .into_iter()
+            .filter(|grouped| grouped.ingredient.modifiers().should_be_listed())
+            .map(|grouped| ListedIngredient {
+                index: crate::int(grouped.index),
+                amounts: grouped.quantity.iter().map(Amount::from).collect(),
+            })
+            .collect(),
         cookware: recipe.cookware.iter().map(cookware).collect(),
-        timers: recipe.timers.iter().map(timer).collect(),
+        timers: recipe.timers.iter().map(|t| timer(t, converter)).collect(),
         inline_quantities: recipe.inline_quantities.iter().map(Amount::from).collect(),
         warnings,
     }
@@ -188,7 +253,28 @@ fn item(item: &core::Item) -> Item {
     }
 }
 
-fn ingredient(ingredient: &core::Ingredient) -> Ingredient {
+fn ingredient(ingredient: &core::Ingredient, section: usize) -> Ingredient {
+    use core::IngredientReferenceTarget as Target;
+    let relation = match ingredient.relation.references_to() {
+        None => IngredientRelation::Definition {
+            referenced_from: ingredient
+                .relation
+                .referenced_from()
+                .iter()
+                .map(|i| crate::int(*i))
+                .collect(),
+        },
+        Some((index, Target::Ingredient)) => IngredientRelation::Ingredient {
+            index: crate::int(index),
+        },
+        Some((block, Target::Step)) => IngredientRelation::Step {
+            section: crate::int(section),
+            block: crate::int(block),
+        },
+        Some((index, Target::Section)) => IngredientRelation::Section {
+            index: crate::int(index),
+        },
+    };
     Ingredient {
         name: ingredient.name.clone(),
         alias: ingredient.alias.clone(),
@@ -200,6 +286,8 @@ fn ingredient(ingredient: &core::Ingredient) -> Ingredient {
             components: r.components.clone(),
         }),
         optional: ingredient.modifiers().is_optional(),
+        hidden: ingredient.modifiers().is_hidden(),
+        relation,
     }
 }
 
@@ -211,39 +299,37 @@ fn cookware(cookware: &core::Cookware) -> Cookware {
         amount: cookware.quantity.as_ref().map(Amount::from),
         note: cookware.note.clone(),
         optional: cookware.modifiers().is_optional(),
+        hidden: cookware.modifiers().is_hidden(),
+        references: cookware.relation.references_to().map(crate::int),
     }
 }
 
-fn timer(timer: &core::Timer) -> Timer {
-    let amount = timer.quantity.as_ref().map(Amount::from);
+fn timer(timer: &core::Timer, converter: &cooklang::Converter) -> Timer {
     Timer {
         name: timer.name.clone(),
-        duration: amount.as_ref().and_then(duration),
-        amount,
+        amount: timer.quantity.as_ref().map(Amount::from),
+        duration: timer.quantity.as_ref().and_then(|q| duration(q, converter)),
     }
 }
 
-fn duration(amount: &Amount) -> Option<TimerDuration> {
-    let seconds = seconds_per(amount.unit.as_deref()?)?;
-    let (start, end) = match amount.quantity {
-        Value::Number { value } => (value, value),
-        Value::Range { start, end } => (start, end),
-        Value::Text { .. } | Value::Empty => return None,
+/// The timer's length, using the parser's own units, so it agrees with the parser about
+/// which units are times.
+fn duration(
+    quantity: &cooklang::quantity::Quantity,
+    converter: &cooklang::Converter,
+) -> Option<TimerDuration> {
+    use cooklang::convert::PhysicalQuantity;
+    use cooklang::quantity::Value as CoreValue;
+    // A timer is a time, so a shared key like `m` means minutes here.
+    let unit = converter.find_unit_in(quantity.unit()?, PhysicalQuantity::Time)?;
+    let (start, end) = match quantity.value() {
+        CoreValue::Number(n) => (n.value(), n.value()),
+        CoreValue::Range { start, end } => (start.value(), end.value()),
+        CoreValue::Text(_) => return None,
     };
+    // Time units are defined in seconds.
     Some(TimerDuration {
-        start_seconds: start * seconds,
-        end_seconds: end * seconds,
-    })
-}
-
-/// Seconds in one of a time unit, covering the names `cooklang` accepts in recipe times.
-fn seconds_per(unit: &str) -> Option<f64> {
-    Some(match unit.trim().to_lowercase().as_str() {
-        "s" | "sec" | "secs" | "second" | "seconds" => 1.0,
-        "m" | "min" | "mins" | "minute" | "minutes" => 60.0,
-        "h" | "hr" | "hrs" | "hour" | "hours" => 3600.0,
-        "d" | "day" | "days" => 86400.0,
-        "w" | "wk" | "wks" | "week" | "weeks" => 604800.0,
-        _ => return None,
+        start_seconds: start * unit.ratio,
+        end_seconds: end * unit.ratio,
     })
 }

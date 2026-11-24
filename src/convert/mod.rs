@@ -144,6 +144,17 @@ impl Converter {
         Some(self.all_units[uid].clone())
     }
 
+    /// Find a unit by any of its names, symbols or aliases, among the units of one
+    /// physical quantity.
+    ///
+    /// A key can belong to units of different quantities, like `m` for both meters and
+    /// minutes. [`Self::find_unit`] gives the one defined first; use this when the
+    /// context says which quantity is meant, like a timer, which is always a time.
+    pub fn find_unit_in(&self, unit: &str, quantity: PhysicalQuantity) -> Option<Arc<Unit>> {
+        let uid = self.unit_index.get_unit_id_in(unit, quantity).ok()?;
+        Some(self.all_units[uid].clone())
+    }
+
     /// Gets the fractions configuration for the given unit
     ///
     /// # Panics
@@ -243,12 +254,30 @@ impl Default for FractionsConfig {
     }
 }
 
+/// Unit ids by key. A key is unique within a physical quantity, but different
+/// quantities can share one, like `m` for meters and minutes.
 #[derive(Debug, Default, Clone, PartialEq)]
-pub(crate) struct UnitIndex(HashMap<Arc<str>, usize>);
+pub(crate) struct UnitIndex {
+    /// For lookups without a quantity: the unit defined first with each key, which is
+    /// the one with the lowest id.
+    pub(crate) any: HashMap<Arc<str>, usize>,
+    pub(crate) by_quantity: EnumMap<PhysicalQuantity, HashMap<Arc<str>, usize>>,
+}
 
 impl UnitIndex {
     fn get_unit_id(&self, key: &str) -> Result<usize, UnknownUnit> {
-        self.0
+        self.any
+            .get(key)
+            .copied()
+            .ok_or_else(|| UnknownUnit(key.to_string()))
+    }
+
+    pub(crate) fn get_unit_id_in(
+        &self,
+        key: &str,
+        quantity: PhysicalQuantity,
+    ) -> Result<usize, UnknownUnit> {
+        self.by_quantity[quantity]
             .get(key)
             .copied()
             .ok_or_else(|| UnknownUnit(key.to_string()))

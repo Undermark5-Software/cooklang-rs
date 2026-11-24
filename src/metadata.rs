@@ -684,7 +684,7 @@ fn parse_time(s: &str, converter: &Converter) -> Result<u32, ParseTimeError> {
 
     // first try a simpler format. Only "HhMm" allowed, no spaces, no other units
     if let Some(minutes) = parse_common_time_format(s) {
-        return Ok(minutes);
+        return Ok(minutes.round() as u32);
     }
 
     let r = parse_time_with_units(s, converter);
@@ -713,38 +713,20 @@ pub(crate) enum ParseTimeError {
     Empty,
 }
 
-fn parse_common_time_format(s: &str) -> Option<u32> {
-    const H_SEP: char = 'h';
-    const M_SEP: char = 'm';
-
-    if s.is_empty() {
-        return None;
-    }
-
-    let mut it = s.split_inclusive(&[H_SEP, M_SEP]);
-
-    let mut total_minutes: u32 = 0;
-    let mut hours_found = false;
-    loop {
-        match it.next() {
-            Some(s) if s.ends_with(H_SEP) && !hours_found => {
-                let hours = &s[..s.len() - H_SEP.len_utf8()].parse::<u32>().ok()?;
-                total_minutes += hours * 60;
-                hours_found = true;
-            }
-            Some(s) if s.ends_with(M_SEP) => {
-                let minutes = &s[..s.len() - M_SEP.len_utf8()].parse::<u32>().ok()?;
-                total_minutes += minutes;
-                break;
-            }
-            None => break,
-            _ => return None,
+/// The compact format: `1h`, `20m`, `1h20m`, `5m30s` or `1h5m3s`, in minutes. Each part
+/// appears at most once, in that order, with no spaces.
+fn parse_common_time_format(s: &str) -> Option<f64> {
+    let mut rest = s;
+    let mut total_minutes = 0.0;
+    let mut found = false;
+    for (separator, minutes) in [('h', 60.0), ('m', 1.0), ('s', 1.0 / 60.0)] {
+        if let Some((number, after)) = rest.split_once(separator) {
+            total_minutes += number.parse::<u32>().ok()? as f64 * minutes;
+            rest = after;
+            found = true;
         }
     }
-    if it.next().is_some() {
-        return None;
-    }
-    Some(total_minutes)
+    (found && rest.is_empty()).then_some(total_minutes)
 }
 
 /// A duration that states its units, like `1h20m`, `1 hour 20 min` or `90 s`, in
@@ -758,7 +740,7 @@ pub(crate) fn parse_duration_minutes(
         return Err(ParseTimeError::Empty);
     }
     if let Some(minutes) = parse_common_time_format(s) {
-        return Ok(minutes as f64);
+        return Ok(minutes);
     }
     time_with_units_minutes(s, converter)
 }
@@ -802,18 +784,17 @@ fn dynamic_time_units(
     converter: &Converter,
 ) -> Result<f64, ParseTimeError> {
     // TODO maybe make this configurable? It will work for 99% of users...
-    let minutes = converter
-        .find_unit("min")
-        .or_else(|| converter.find_unit("minute"))
-        .or_else(|| converter.find_unit("minutes"))
-        .or_else(|| converter.find_unit("m"))
+    let minutes = ["min", "minute", "minutes", "m"]
+        .into_iter()
+        .find_map(|key| converter.find_unit_in(key, PhysicalQuantity::Time))
         .ok_or(ParseTimeError::MinutesNotFound)?;
-    if minutes.physical_quantity != PhysicalQuantity::Time {
-        return Err(ParseTimeError::MinutesNotFound);
-    }
+    // A time is being parsed, so `m` is minutes, not meters.
+    let unit = converter
+        .find_unit_in(unit, PhysicalQuantity::Time)
+        .ok_or_else(|| ConvertError::UnknownUnit(UnknownUnit(unit.to_string())))?;
     let (value, _) = converter.convert(
         ConvertValue::Number(value),
-        ConvertUnit::Key(unit),
+        ConvertUnit::Unit(&unit),
         ConvertTo::from(&minutes),
     )?;
     match value {
@@ -828,7 +809,6 @@ fn hard_coded_time_units(value: f64, unit: &str) -> Result<f64, ParseTimeError> 
         "m" | "min" | "mins" | "minute" | "minutes" => value,
         "h" | "hr" | "hrs" | "hour" | "hours" => value * 60.0,
         "d" | "day" | "days" => value * 24.0 * 60.0,
-        "w" | "wk" | "wks" | "week" | "weeks" => value * 7.0 * 24.0 * 60.0,
         _ => return Err(ConvertError::UnknownUnit(UnknownUnit(unit.to_string())).into()),
     };
     Ok(minutes)
@@ -931,13 +911,17 @@ mod tests {
         let f = parse_common_time_format;
         assert_eq!(f(""), None);
         assert_eq!(f("1"), None);
-        assert_eq!(f("1m"), Some(1));
-        assert_eq!(f("1h"), Some(60));
-        assert_eq!(f("1h1m"), Some(61));
-        assert_eq!(f("1h90m"), Some(150));
+        assert_eq!(f("1m"), Some(1.0));
+        assert_eq!(f("1h"), Some(60.0));
+        assert_eq!(f("1h1m"), Some(61.0));
+        assert_eq!(f("1h90m"), Some(150.0));
         assert_eq!(f("1d1h1m"), None);
         assert_eq!(f("1d1h1m1s"), None);
-        assert_eq!(f("1m1s"), None)
+        assert_eq!(f("1m30s"), Some(1.5));
+        assert_eq!(f("1h5m3s"), Some(65.05));
+        assert_eq!(f("90s"), Some(1.5));
+        assert_eq!(f("1s1m"), None);
+        assert_eq!(f("1h 5m"), None)
     }
 
     #[test]

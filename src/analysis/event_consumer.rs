@@ -998,7 +998,12 @@ impl<'i> RecipeCollector<'i, '_> {
                 }
                 if let Some(unit_text) = quantity.unit() {
                     let unit_span = located_quantity.unit.as_ref().unwrap().span();
-                    match quantity.unit_info(self.converter) {
+                    // A timer is a time, so prefer a time unit for a shared key like `m`.
+                    let unit = self
+                        .converter
+                        .find_unit_in(unit_text, PhysicalQuantity::Time)
+                        .or_else(|| quantity.unit_info(self.converter));
+                    match unit {
                         Some(unit) => {
                             if unit.physical_quantity != PhysicalQuantity::Time {
                                 self.ctx.error(error!(
@@ -1551,8 +1556,25 @@ fn parse_reference(name: &str) -> Option<RecipeReference> {
 /// Anything else must state its units, like `1h20m`, `1 hour 20 min` or `1h20m-1h25m`, and
 /// is read as minutes.
 fn timer_duration(quantity: &Quantity, converter: &Converter) -> Option<Quantity> {
-    let Value::Text(text) = quantity.value() else {
-        return None;
+    let text = match quantity.value() {
+        Value::Text(text) => text,
+        // With ADVANCED_UNITS, `1 hour 20 min` arrives as the number 1 and the "unit"
+        // `hour 20 min`. A real time unit is left alone.
+        Value::Number(number) => {
+            let unit = quantity.unit()?;
+            if converter
+                .find_unit_in(unit, PhysicalQuantity::Time)
+                .is_some()
+                || (converter.unit_count() == 0
+                    && parse_duration_minutes(&format!("1 {unit}"), converter).is_ok())
+            {
+                return None;
+            }
+            let minutes =
+                parse_duration_minutes(&format!("{} {unit}", number.value()), converter).ok()?;
+            return Some(Quantity::new(minutes.into(), Some("min".to_string())));
+        }
+        Value::Range { .. } => return None,
     };
     let (start, end) = match text.split_once('-') {
         Some((start, end)) => (start, Some(end)),
@@ -1567,9 +1589,12 @@ fn timer_duration(quantity: &Quantity, converter: &Converter) -> Option<Quantity
     };
 
     if let Some((start, end, unit)) = single_unit(start, end, quantity.unit()) {
-        let is_time = parse_duration_minutes(&format!("1 {unit}"), converter).is_ok();
-        return is_time.then(|| Quantity::new(value(start, end), Some(unit)));
+        if parse_duration_minutes(&format!("1 {unit}"), converter).is_ok() {
+            return Some(Quantity::new(value(start, end), Some(unit)));
+        }
     }
+    // A unit given with `%` must be a time unit. Without one, the text may still be a
+    // compound duration: `20m` isn't 20 meters.
     if quantity.unit().is_some() {
         return None;
     }

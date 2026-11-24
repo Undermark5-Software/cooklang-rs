@@ -75,8 +75,8 @@ quantity = "time"
 best = ["s", "h", "min", "d"]
 units = [
     { names = ["second", "seconds"], symbols = ["s", "sec"], aliases = ["secs"], ratio = 1 },
-    { names = ["minute", "minutes"], symbols = ["min"], aliases = ["mins"], ratio = 60 },
-    { names = ["hour", "hours"], symbols = ["h"], ratio = 3600 },
+    { names = ["minute", "minutes"], symbols = ["min", "m"], aliases = ["mins"], ratio = 60 },
+    { names = ["hour", "hours"], symbols = ["h"], aliases = ["hr", "hrs"], ratio = 3600 },
     { names = ["day", "days"], symbols = ["d"], ratio = 86400 },
 ]
 

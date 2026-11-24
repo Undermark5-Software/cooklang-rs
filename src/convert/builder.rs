@@ -187,7 +187,7 @@ impl ConverterBuilder {
         let best = enum_map! {
             q =>  {
                 if let Some(best_units) = &self.best_units[q] {
-                    BestConversionsStore::new(best_units, &self.unit_index, &self.all_units)?
+                    BestConversionsStore::new(best_units, q, &self.unit_index, &self.all_units)?
                 } else {
                     return Err(ConverterBuilderError::EmptyBest { reason: "no best units given", quantity: q })
                 }
@@ -229,16 +229,17 @@ impl ConverterBuilder {
 impl BestConversionsStore {
     fn new(
         best_units: &BestUnits,
+        quantity: PhysicalQuantity,
         unit_index: &UnitIndex,
         all_units: &[UnitBuilder],
     ) -> Result<Self, ConverterBuilderError> {
         let v = match best_units {
-            BestUnits::Unified(names) => {
-                Self::Unified(BestConversions::new(names, unit_index, all_units)?)
-            }
+            BestUnits::Unified(names) => Self::Unified(BestConversions::new(
+                names, quantity, unit_index, all_units,
+            )?),
             BestUnits::BySystem { metric, imperial } => Self::BySystem {
-                metric: BestConversions::new(metric, unit_index, all_units)?,
-                imperial: BestConversions::new(imperial, unit_index, all_units)?,
+                metric: BestConversions::new(metric, quantity, unit_index, all_units)?,
+                imperial: BestConversions::new(imperial, quantity, unit_index, all_units)?,
             },
         };
         Ok(v)
@@ -248,12 +249,14 @@ impl BestConversionsStore {
 impl BestConversions {
     fn new(
         units: &[String],
+        quantity: PhysicalQuantity,
         unit_index: &UnitIndex,
         all_units: &[UnitBuilder],
     ) -> Result<Self, ConverterBuilderError> {
+        // A group's best units are its own, even if another quantity shares a key.
         let mut units = units
             .iter()
-            .map(|n| unit_index.get_unit_id(n))
+            .map(|n| unit_index.get_unit_id_in(n, quantity))
             .collect::<Result<Vec<_>, _>>()?;
 
         units.sort_by(|a, b| {
@@ -498,8 +501,18 @@ fn expand_si(
 
 impl UnitIndex {
     fn remove_unit(&mut self, unit: &Unit) {
+        let quantity = unit.physical_quantity;
         for key in unit.all_keys() {
-            self.0.remove(key);
+            let Some(id) = self.by_quantity[quantity].remove(key) else {
+                continue;
+            };
+            if self.any.get(key) == Some(&id) {
+                // Another quantity's unit with this key, if any, becomes the default.
+                match self.by_quantity.values().filter_map(|m| m.get(key)).min() {
+                    Some(&other) => self.any.insert(Arc::clone(key), other),
+                    None => self.any.remove(key),
+                };
+            }
         }
     }
 
@@ -520,12 +533,16 @@ impl UnitIndex {
                     unit: unit.clone().into(),
                 });
             }
-            let maybe_other = self.0.insert(Arc::clone(key), id);
+            // Unique within a quantity; different quantities can share a key.
+            let maybe_other = self.by_quantity[unit.physical_quantity].insert(Arc::clone(key), id);
             if maybe_other.is_some() {
                 return Err(ConverterBuilderError::DuplicateUnit {
                     name: key.to_string(),
                 });
             }
+            // The unit defined first is the default for lookups without a quantity.
+            let default = self.any.entry(Arc::clone(key)).or_insert(id);
+            *default = (*default).min(id);
             added += 1;
         }
         if added == 0 {

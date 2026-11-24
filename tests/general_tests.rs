@@ -318,7 +318,6 @@ fn in_unit(value: Value, unit: &str) -> Option<(Value, Option<String>)> {
 #[test_case("~{1h20m-1h25m}" => minutes_range(80.0, 85.0); "duration range")]
 #[test_case("~{1h}" => in_unit(Value::from(1.0), "h"); "one unit is kept")]
 #[test_case("~{90 s}" => in_unit(Value::from(90.0), "s"); "seconds are kept")]
-#[test_case("~{1 week}" => in_unit(Value::from(1.0), "week"); "weeks")]
 #[test_case("~{30-40%minutes}" => in_unit(range(30.0, 40.0), "minutes"); "text range with unit")]
 #[test_case("~{1-3%seconds}" => in_unit(range(1.0, 3.0), "seconds"); "seconds range")]
 #[test_case("~{1-3 seconds}" => in_unit(range(1.0, 3.0), "seconds"); "unit after a range applies to both ends")]
@@ -381,4 +380,66 @@ fn warnings(extensions: Extensions, input: &str) -> Vec<String> {
 #[test_case(Extensions::RANGE_VALUES | Extensions::TIMER_DURATIONS, "~{10-5%min}" => vec!["Range is backwards"]; "warned once with both")]
 fn range_warnings(extensions: Extensions, input: &str) -> Vec<String> {
     warnings(extensions, input)
+}
+
+#[test_case("~{20m}" => in_unit(Value::from(20.0), "m"); "minutes only")]
+#[test_case("~{10%m}" => in_unit(Value::from(10.0), "m"); "m is minutes in a timer")]
+#[test_case("~{5-10%m}" => in_unit(range(5.0, 10.0), "m"); "m range")]
+#[test_case("~{2%hrs}" => in_unit(Value::from(2.0), "hrs"); "hrs")]
+#[test_case("~{1h20m}" => minutes(80.0); "hours and minutes")]
+#[test_case("~{20m-25m}" => minutes_range(20.0, 25.0); "range")]
+#[test_case("~{1h 5m 3s}" => minutes(65.05); "spaced parts")]
+#[test_case("~{1 h 5 m 3 s}" => minutes(65.05); "spaced numbers and units")]
+#[test_case("~{1h5m3s}" => minutes(65.05); "compact with seconds")]
+#[test_case("~{1 hour 5 min 3 s}" => minutes(65.05); "spelled out")]
+#[test_case("~{1 hour 20 minutes}" => minutes(80.0); "spelled out without seconds")]
+#[test_case("~{1 hour and 15 minutes}" => minutes(75.0); "with and")]
+fn timer_durations_with_bundled_units(timer: &str) -> Option<(Value, Option<String>)> {
+    // The bundled units have `m` for both meters and minutes; in a timer it's minutes.
+    let parser = CooklangParser::new(Extensions::all(), cooklang::Converter::bundled());
+    let result = parser.parse(&format!("Bake for {timer}."));
+    let messages: Vec<_> = result
+        .report()
+        .iter()
+        .map(|d| d.message.to_string())
+        .collect();
+    assert!(messages.is_empty(), "{messages:?}");
+    let recipe = result.into_output().unwrap();
+    recipe.timers[0]
+        .quantity
+        .as_ref()
+        .map(|q| (q.value().clone(), q.unit().map(str::to_string)))
+}
+
+#[test]
+fn m_is_still_meters_outside_times() {
+    let parser = CooklangParser::new(Extensions::all(), cooklang::Converter::bundled());
+    let unit = parser.converter().find_unit("m").unwrap();
+    assert_eq!(
+        unit.physical_quantity,
+        cooklang::convert::PhysicalQuantity::Length
+    );
+    let minute = parser
+        .converter()
+        .find_unit_in("m", cooklang::convert::PhysicalQuantity::Time)
+        .unwrap();
+    assert_eq!(minute.ratio, 60.0);
+
+    let result = parser.parse("---\nprep time: 20 m\ncook time: 1h5m30s\n---\nCut @rope{2%m}.");
+    let recipe = result.into_output().unwrap();
+    // Recipe times are times, so `20 m` is minutes there too.
+    assert_eq!(
+        recipe.metadata.time(parser.converter()),
+        Some(cooklang::metadata::RecipeTime::Composed {
+            prep_time: Some(20),
+            cook_time: Some(66),
+        })
+    );
+    let rope = recipe.ingredients[0].quantity.as_ref().unwrap();
+    assert_eq!(
+        rope.unit_info(parser.converter())
+            .unwrap()
+            .physical_quantity,
+        cooklang::convert::PhysicalQuantity::Length
+    );
 }

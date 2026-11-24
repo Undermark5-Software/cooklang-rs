@@ -103,12 +103,13 @@ pub struct Timer {
     pub duration: Option<TimerDuration>,
 }
 
-/// A timer's length in seconds. The two ends are equal unless the recipe gives a range,
-/// like `~{1h20m-1h25m}`.
+/// A timer's length in seconds, with the ends in the order the recipe gives them. They are
+/// equal unless the recipe gives a range, like `~{1h20m-1h25m}`. A backwards range keeps
+/// its order, and warns at parse time.
 #[derive(uniffi::Record, Debug, Clone, Copy, PartialEq)]
 pub struct TimerDuration {
-    pub min_seconds: f64,
-    pub max_seconds: f64,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
 }
 
 /// A reference to another recipe file.
@@ -224,14 +225,14 @@ fn timer(timer: &core::Timer) -> Timer {
 
 fn duration(amount: &Amount) -> Option<TimerDuration> {
     let seconds = seconds_per(amount.unit.as_deref()?)?;
-    let (min, max) = match amount.quantity {
+    let (start, end) = match amount.quantity {
         Value::Number { value } => (value, value),
         Value::Range { start, end } => (start, end),
         Value::Text { .. } | Value::Empty => return None,
     };
     Some(TimerDuration {
-        min_seconds: min * seconds,
-        max_seconds: max * seconds,
+        start_seconds: start * seconds,
+        end_seconds: end * seconds,
     })
 }
 

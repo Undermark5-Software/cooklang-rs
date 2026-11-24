@@ -165,10 +165,10 @@ mod tests {
         let warnings: Vec<_> = recipe.warnings.iter().map(|w| w.message.as_str()).collect();
         assert_eq!(warnings, ["Invalid timer quantity: missing unit"]);
         let durations: Vec<_> = recipe.timers.iter().map(|t| t.duration).collect();
-        let d = |min_seconds, max_seconds| {
+        let d = |start_seconds, end_seconds| {
             Some(recipe::TimerDuration {
-                min_seconds,
-                max_seconds,
+                start_seconds,
+                end_seconds,
             })
         };
         assert_eq!(
@@ -177,5 +177,17 @@ mod tests {
         );
         // Text with no unit stays text, with no duration.
         assert_eq!(durations[3], None);
+    }
+
+    #[test]
+    fn backwards_timer_warns_and_keeps_its_order() {
+        let recipe = parse_recipe("Bake for ~{1h25m-1h20m}.".into(), 1.0).unwrap();
+        let warnings: Vec<_> = recipe.warnings.iter().map(|w| w.message.as_str()).collect();
+        assert_eq!(warnings, ["Range is backwards"]);
+        let duration = recipe.timers[0].duration.unwrap();
+        assert_eq!(
+            (duration.start_seconds, duration.end_seconds),
+            (5100.0, 4800.0)
+        );
     }
 }

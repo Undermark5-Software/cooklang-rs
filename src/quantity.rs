@@ -219,6 +219,21 @@ impl Display for Number {
     }
 }
 
+/// What's wrong with a range whose ends are `start` and `end`, as a warning message and a
+/// hint, or `None` if `start` is less than `end`.
+pub(crate) fn range_problem(start: f64, end: f64) -> Option<(&'static str, &'static str)> {
+    if start > end {
+        Some(("Range is backwards", "Put the smaller value first"))
+    } else if start == end {
+        Some((
+            "Range has the same start and end",
+            "Write a single value instead",
+        ))
+    } else {
+        None
+    }
+}
+
 impl From<f64> for Value {
     fn from(value: f64) -> Self {
         Self::Number(Number::Regular(value))

@@ -9,7 +9,7 @@ use crate::parser::{
     self, BlockKind, Event, IntermediateData, IntermediateRefMode, IntermediateTargetKind,
     Modifiers,
 };
-use crate::quantity::{Quantity, Value};
+use crate::quantity::{range_problem, Quantity, Value};
 use crate::span::Span;
 use crate::text::Text;
 use crate::{model::*, Extensions, ParseOptions};
@@ -967,11 +967,18 @@ impl<'i> RecipeCollector<'i, '_> {
         let quantity = timer.quantity.map(|q| {
             let quantity = self.quantity(q, false);
             if self.extensions.contains(Extensions::TIMER_DURATIONS) {
+                let value_span = located_timer.quantity.as_ref().unwrap().value.span();
                 if let Some(duration) = timer_duration(&quantity, self.converter) {
+                    if let Value::Range { start, end } = duration.value() {
+                        if let Some((message, hint)) = range_problem(start.value(), end.value()) {
+                            self.ctx.warn(
+                                warning!(message, label!(value_span, "this range")).hint(hint),
+                            );
+                        }
+                    }
                     // Known to be a time, and its unit isn't in the source to point at.
                     return duration;
                 } else if quantity.unit().is_none() {
-                    let value_span = located_timer.quantity.as_ref().unwrap().value.span();
                     self.ctx.warn(
                         warning!(
                             "Invalid timer quantity: missing unit",

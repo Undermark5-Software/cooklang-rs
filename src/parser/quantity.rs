@@ -5,7 +5,7 @@ use crate::{
     error::{label, SourceDiag},
     lexer::T,
     located::Located,
-    quantity::{Number, Value},
+    quantity::{range_problem, Number, Value},
     span::Span,
     Extensions,
 };
@@ -188,6 +188,12 @@ fn parse_value(tokens: &[Token], bp: &mut BlockParser) -> Located<Value> {
             Value::recover()
         }
     };
+
+    if let Value::Range { start, end } = &val {
+        if let Some((message, hint)) = range_problem(start.value(), end.value()) {
+            bp.warn(warning!(message, label!(span, "this range")).hint(hint));
+        }
+    }
 
     Located::new(val, span)
 }

@@ -357,3 +357,28 @@ fn timer_durations_with_all_extensions() {
     assert_eq!(quantity, minutes_range(80.0, 85.0));
     assert!(messages.is_empty(), "{messages:?}");
 }
+
+fn warnings(extensions: Extensions, input: &str) -> Vec<String> {
+    let parser = CooklangParser::new(extensions, cooklang::Converter::empty());
+    let result = parser.parse(input);
+    let messages = result
+        .report()
+        .iter()
+        .map(|d| d.message.to_string())
+        .collect();
+    result.into_output().expect("parses");
+    messages
+}
+
+#[test_case(Extensions::TIMER_DURATIONS, "~{10-5%min}" => vec!["Range is backwards"]; "timer text range")]
+#[test_case(Extensions::TIMER_DURATIONS, "~{1h25m-1h20m}" => vec!["Range is backwards"]; "timer compound range")]
+#[test_case(Extensions::TIMER_DURATIONS, "~{5-5%min}" => vec!["Range has the same start and end"]; "timer same ends")]
+#[test_case(Extensions::TIMER_DURATIONS, "~{1h-60m}" => vec!["Range has the same start and end"]; "timer same ends in other units")]
+#[test_case(Extensions::TIMER_DURATIONS, "~{5-10%min}" => Vec::<String>::new(); "timer in order")]
+#[test_case(Extensions::RANGE_VALUES, "@salt{3-1%tsp}" => vec!["Range is backwards"]; "ingredient backwards")]
+#[test_case(Extensions::RANGE_VALUES, "@salt{2-2%tsp}" => vec!["Range has the same start and end"]; "ingredient same ends")]
+#[test_case(Extensions::RANGE_VALUES, "@salt{1/2-1%tsp}" => Vec::<String>::new(); "ingredient in order")]
+#[test_case(Extensions::RANGE_VALUES | Extensions::TIMER_DURATIONS, "~{10-5%min}" => vec!["Range is backwards"]; "warned once with both")]
+fn range_warnings(extensions: Extensions, input: &str) -> Vec<String> {
+    warnings(extensions, input)
+}

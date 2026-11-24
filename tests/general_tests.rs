@@ -273,3 +273,87 @@ fn timer_missing_unit_warning() {
     // Should parse successfully (not error)
     let _r = result.unwrap_output();
 }
+
+fn timer_with(
+    extensions: Extensions,
+    input: &str,
+) -> (Option<(Value, Option<String>)>, Vec<String>) {
+    let parser = CooklangParser::new(extensions, cooklang::Converter::empty());
+    let result = parser.parse(input);
+    let messages = result
+        .report()
+        .iter()
+        .map(|d| d.message.to_string())
+        .collect();
+    let recipe = result.into_output().expect("parses");
+    let quantity = recipe.timers[0]
+        .quantity
+        .as_ref()
+        .map(|q| (q.value().clone(), q.unit().map(str::to_string)));
+    (quantity, messages)
+}
+
+fn minutes(value: f64) -> Option<(Value, Option<String>)> {
+    Some((value.into(), Some("min".into())))
+}
+
+fn range(start: f64, end: f64) -> Value {
+    Value::Range {
+        start: start.into(),
+        end: end.into(),
+    }
+}
+
+fn minutes_range(start: f64, end: f64) -> Option<(Value, Option<String>)> {
+    in_unit(range(start, end), "min")
+}
+
+fn in_unit(value: Value, unit: &str) -> Option<(Value, Option<String>)> {
+    Some((value, Some(unit.into())))
+}
+
+#[test_case("~{1h20m}" => minutes(80.0); "hours and minutes")]
+#[test_case("~{1 hour 20 minutes}" => minutes(80.0); "spelled out")]
+#[test_case("~{1 hour and 15 minutes}" => minutes(75.0); "with and")]
+#[test_case("~{1h20m-1h25m}" => minutes_range(80.0, 85.0); "duration range")]
+#[test_case("~{1h}" => in_unit(Value::from(1.0), "h"); "one unit is kept")]
+#[test_case("~{90 s}" => in_unit(Value::from(90.0), "s"); "seconds are kept")]
+#[test_case("~{1 week}" => in_unit(Value::from(1.0), "week"); "weeks")]
+#[test_case("~{30-40%minutes}" => in_unit(range(30.0, 40.0), "minutes"); "text range with unit")]
+#[test_case("~{1-3%seconds}" => in_unit(range(1.0, 3.0), "seconds"); "seconds range")]
+#[test_case("~{1-3 seconds}" => in_unit(range(1.0, 3.0), "seconds"); "unit after a range applies to both ends")]
+#[test_case("~{9-10%mins}" => in_unit(range(9.0, 10.0), "mins"); "mins")]
+#[test_case("~{1 1/2%hours}" => in_unit(Value::from(1.5), "hours"); "numeric value is kept")]
+#[test_case("~{1 1/2-2%hours}" => in_unit(range(1.5, 2.0), "hours"); "fraction in a range")]
+#[test_case("~{1/2-1 hour}" => in_unit(range(0.5, 1.0), "hour"); "fraction before the unit")]
+fn timer_durations(timer: &str) -> Option<(Value, Option<String>)> {
+    let (quantity, messages) =
+        timer_with(Extensions::TIMER_DURATIONS, &format!("Bake for {timer}."));
+    assert!(messages.is_empty(), "{messages:?}");
+    quantity
+}
+
+#[test_case("~{30}"; "bare number")]
+#[test_case("~{minutes}"; "unit without a number")]
+#[test_case("~{a while}"; "text")]
+#[test_case("~{3 eggs}"; "not a time unit")]
+#[test_case("~{1-1h25m}"; "bare start with a compound end")]
+fn timer_durations_still_warn_without_a_unit(timer: &str) {
+    let (_, messages) = timer_with(Extensions::TIMER_DURATIONS, &format!("Wait {timer}."));
+    assert_eq!(messages, ["Invalid timer quantity: missing unit"]);
+}
+
+#[test]
+fn timer_durations_are_off_unless_enabled() {
+    let (quantity, messages) = timer_with(Extensions::empty(), "Bake for ~{1h20m}.");
+    assert_eq!(quantity, Some((Value::Text("1h20m".into()), None)));
+    assert_eq!(messages, ["Invalid timer quantity: missing unit"]);
+}
+
+#[test]
+fn timer_durations_with_all_extensions() {
+    // Advanced units rejects text timer values, so the duration must be read first.
+    let (quantity, messages) = timer_with(Extensions::all(), "Bake for ~{1h20m-1h25m}.");
+    assert_eq!(quantity, minutes_range(80.0, 85.0));
+    assert!(messages.is_empty(), "{messages:?}");
+}

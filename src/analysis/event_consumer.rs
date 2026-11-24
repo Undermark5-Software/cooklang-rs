@@ -4,7 +4,7 @@ use std::str::FromStr;
 use crate::convert::{Converter, PhysicalQuantity};
 use crate::error::{label, CowStr, PassResult, SourceDiag, SourceReport};
 use crate::located::Located;
-use crate::metadata::{check_std_entry, StdKey};
+use crate::metadata::{check_std_entry, parse_duration_minutes, StdKey};
 use crate::parser::{
     self, BlockKind, Event, IntermediateData, IntermediateRefMode, IntermediateTargetKind,
     Modifiers,
@@ -966,6 +966,21 @@ impl<'i> RecipeCollector<'i, '_> {
         let (timer, _span) = timer.take_pair();
         let quantity = timer.quantity.map(|q| {
             let quantity = self.quantity(q, false);
+            if self.extensions.contains(Extensions::TIMER_DURATIONS) {
+                if let Some(duration) = timer_duration(&quantity, self.converter) {
+                    // Known to be a time, and its unit isn't in the source to point at.
+                    return duration;
+                } else if quantity.unit().is_none() {
+                    let value_span = located_timer.quantity.as_ref().unwrap().value.span();
+                    self.ctx.warn(
+                        warning!(
+                            "Invalid timer quantity: missing unit",
+                            label!(Span::pos(value_span.end()), "expected unit here"),
+                        )
+                        .hint("A timer needs a unit to know the duration"),
+                    );
+                }
+            }
             if self.extensions.contains(Extensions::ADVANCED_UNITS) {
                 let located_quantity = located_timer.quantity.as_ref().unwrap();
                 if quantity.value().is_text() {
@@ -1518,6 +1533,92 @@ fn parse_reference(name: &str) -> Option<RecipeReference> {
         }
     } else {
         None
+    }
+}
+
+/// Reads a timer whose value is text as a duration, for [`Extensions::TIMER_DURATIONS`].
+/// Returns `None` if the text isn't one.
+///
+/// A value in a single unit keeps that unit, and a range's unit applies to both ends:
+/// `30-40%min`, `1-3%seconds` and `1-3 seconds` are all ranges in the unit written.
+/// Anything else must state its units, like `1h20m`, `1 hour 20 min` or `1h20m-1h25m`, and
+/// is read as minutes.
+fn timer_duration(quantity: &Quantity, converter: &Converter) -> Option<Quantity> {
+    let Value::Text(text) = quantity.value() else {
+        return None;
+    };
+    let (start, end) = match text.split_once('-') {
+        Some((start, end)) => (start, Some(end)),
+        None => (text.as_str(), None),
+    };
+    let value = |start: f64, end: Option<f64>| match end {
+        Some(end) => Value::Range {
+            start: start.into(),
+            end: end.into(),
+        },
+        None => start.into(),
+    };
+
+    if let Some((start, end, unit)) = single_unit(start, end, quantity.unit()) {
+        let is_time = parse_duration_minutes(&format!("1 {unit}"), converter).is_ok();
+        return is_time.then(|| Quantity::new(value(start, end), Some(unit)));
+    }
+    if quantity.unit().is_some() {
+        return None;
+    }
+    let minutes = |s: &str| parse_duration_minutes(s, converter).ok();
+    let end = match end {
+        Some(end) => Some(minutes(end)?),
+        None => None,
+    };
+    Some(Quantity::new(
+        value(minutes(start)?, end),
+        Some("min".to_string()),
+    ))
+}
+
+/// Splits a timer value with one unit for the whole of it into its numbers and unit. The
+/// unit is [`Quantity::unit`] if there is one, otherwise the word after the last number,
+/// as in `1-3 seconds`. `None` if there is no such unit, or a number doesn't parse.
+fn single_unit(
+    start: &str,
+    end: Option<&str>,
+    unit: Option<&str>,
+) -> Option<(f64, Option<f64>, String)> {
+    if let Some(unit) = unit {
+        let end = match end {
+            Some(end) => Some(number(end)?),
+            None => None,
+        };
+        return Some((number(start)?, end, unit.trim().to_string()));
+    }
+    let last = end.unwrap_or(start).trim();
+    let (last_number, unit) = last.split_at(last.find(|c: char| !c.is_ascii_digit() && c != '.')?);
+    let unit = unit.trim();
+    if unit.is_empty() || unit.contains(|c: char| c.is_ascii_digit() || c.is_whitespace()) {
+        return None;
+    }
+    let last_number = number(last_number)?;
+    Some(match end {
+        Some(_) => (number(start)?, Some(last_number), unit.to_string()),
+        None => (last_number, None, unit.to_string()),
+    })
+}
+
+/// A plain number, fraction or mixed number, like `2`, `1.5`, `1/2` or `1 1/2`.
+fn number(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if let Ok(n) = s.parse::<f64>() {
+        return Some(n);
+    }
+    let fraction = |s: &str| {
+        let (num, den) = s.split_once('/')?;
+        let den = den.trim().parse::<f64>().ok().filter(|d| *d != 0.0)?;
+        Some(num.trim().parse::<f64>().ok()? / den)
+    };
+    match s.split_once(char::is_whitespace) {
+        Some((whole, frac)) => Some(whole.parse::<f64>().ok()? + fraction(frac)?),
+        None => fraction(s),
     }
 }
 

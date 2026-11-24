@@ -4,7 +4,7 @@ use cooklang::model as core;
 
 use crate::diagnostics::Diagnostic;
 use crate::metadata::Metadata;
-use crate::quantity::Amount;
+use crate::quantity::{Amount, Value};
 
 /// A parsed Cooklang recipe.
 ///
@@ -99,6 +99,16 @@ pub struct Cookware {
 pub struct Timer {
     pub name: Option<String>,
     pub amount: Option<Amount>,
+    /// How long the timer runs, if its amount is a number or range in a time unit.
+    pub duration: Option<TimerDuration>,
+}
+
+/// A timer's length in seconds. The two ends are equal unless the recipe gives a range,
+/// like `~{1h20m-1h25m}`.
+#[derive(uniffi::Record, Debug, Clone, Copy, PartialEq)]
+pub struct TimerDuration {
+    pub min_seconds: f64,
+    pub max_seconds: f64,
 }
 
 /// A reference to another recipe file.
@@ -204,8 +214,35 @@ fn cookware(cookware: &core::Cookware) -> Cookware {
 }
 
 fn timer(timer: &core::Timer) -> Timer {
+    let amount = timer.quantity.as_ref().map(Amount::from);
     Timer {
         name: timer.name.clone(),
-        amount: timer.quantity.as_ref().map(Amount::from),
+        duration: amount.as_ref().and_then(duration),
+        amount,
     }
+}
+
+fn duration(amount: &Amount) -> Option<TimerDuration> {
+    let seconds = seconds_per(amount.unit.as_deref()?)?;
+    let (min, max) = match amount.quantity {
+        Value::Number { value } => (value, value),
+        Value::Range { start, end } => (start, end),
+        Value::Text { .. } | Value::Empty => return None,
+    };
+    Some(TimerDuration {
+        min_seconds: min * seconds,
+        max_seconds: max * seconds,
+    })
+}
+
+/// Seconds in one of a time unit, covering the names `cooklang` accepts in recipe times.
+fn seconds_per(unit: &str) -> Option<f64> {
+    Some(match unit.trim().to_lowercase().as_str() {
+        "s" | "sec" | "secs" | "second" | "seconds" => 1.0,
+        "m" | "min" | "mins" | "minute" | "minutes" => 60.0,
+        "h" | "hr" | "hrs" | "hour" | "hours" => 3600.0,
+        "d" | "day" | "days" => 86400.0,
+        "w" | "wk" | "wks" | "week" | "weeks" => 604800.0,
+        _ => return None,
+    })
 }

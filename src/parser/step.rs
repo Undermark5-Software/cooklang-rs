@@ -443,7 +443,8 @@ fn timer<'i>(bp: &mut BlockParser<'_, 'i>) -> Option<Event<'i>> {
 
     let mut quantity = body.quantity.map(|tokens| {
         let q = parse_quantity(bp, tokens);
-        if q.quantity.unit.is_none() {
+        // With TIMER_DURATIONS, analysis may still find a unit in the text and warns itself.
+        if q.quantity.unit.is_none() && !bp.extension(Extensions::TIMER_DURATIONS) {
             bp.warn(
                 warning!(
                     "Invalid timer quantity: missing unit",

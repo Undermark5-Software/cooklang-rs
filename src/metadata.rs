@@ -747,7 +747,27 @@ fn parse_common_time_format(s: &str) -> Option<u32> {
     Some(total_minutes)
 }
 
+/// A duration that states its units, like `1h20m`, `1 hour 20 min` or `90 s`, in
+/// minutes and not rounded. Unlike [`parse_time`], a bare number is an error.
+pub(crate) fn parse_duration_minutes(
+    s: &str,
+    converter: &Converter,
+) -> Result<f64, ParseTimeError> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err(ParseTimeError::Empty);
+    }
+    if let Some(minutes) = parse_common_time_format(s) {
+        return Ok(minutes as f64);
+    }
+    time_with_units_minutes(s, converter)
+}
+
 fn parse_time_with_units(s: &str, converter: &Converter) -> Result<u32, ParseTimeError> {
+    time_with_units_minutes(s, converter).map(|minutes| minutes.round() as u32)
+}
+
+fn time_with_units_minutes(s: &str, converter: &Converter) -> Result<f64, ParseTimeError> {
     let to_minutes = |value, unit| {
         if converter.unit_count() == 0 {
             hard_coded_time_units(value, unit)
@@ -757,7 +777,8 @@ fn parse_time_with_units(s: &str, converter: &Converter) -> Result<u32, ParseTim
     };
 
     let mut total = 0.0;
-    let mut parts = s.split_whitespace();
+    // "1 hour and 15 minutes" reads the same as "1 hour 15 minutes".
+    let mut parts = s.split_whitespace().filter(|part| *part != "and");
     while let Some(part) = parts.next() {
         let first_non_digit_pos = part.find(|c: char| !c.is_ascii_digit() && c != '.');
         let (number, unit) = if let Some(mid) = first_non_digit_pos {
@@ -772,7 +793,7 @@ fn parse_time_with_units(s: &str, converter: &Converter) -> Result<u32, ParseTim
         let number = number.parse::<f64>()?;
         total += to_minutes(number, unit)?;
     }
-    Ok(total.round() as u32)
+    Ok(total)
 }
 
 fn dynamic_time_units(
@@ -804,9 +825,10 @@ fn dynamic_time_units(
 fn hard_coded_time_units(value: f64, unit: &str) -> Result<f64, ParseTimeError> {
     let minutes = match unit {
         "s" | "sec" | "secs" | "second" | "seconds" => value / 60.0,
-        "m" | "min" | "minute" | "minutes" => value,
-        "h" | "hour" | "hours" => value * 60.0,
+        "m" | "min" | "mins" | "minute" | "minutes" => value,
+        "h" | "hr" | "hrs" | "hour" | "hours" => value * 60.0,
         "d" | "day" | "days" => value * 24.0 * 60.0,
+        "w" | "wk" | "wks" | "week" | "weeks" => value * 7.0 * 24.0 * 60.0,
         _ => return Err(ConvertError::UnknownUnit(UnknownUnit(unit.to_string())).into()),
     };
     Ok(minutes)

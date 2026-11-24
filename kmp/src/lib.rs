@@ -27,9 +27,15 @@ pub use shopping_list::*;
 ///
 /// Throws `CooklangException.Parse` if the recipe has errors; warnings are in
 /// [`Recipe::warnings`].
+///
+/// Parses standard Cooklang, plus timers written as durations, like `~{1h20m}` or
+/// `~{1-3 seconds}`. Every timer in a time unit has a [`recipe::TimerDuration`].
 #[uniffi::export(default(scale = 1.0))]
 pub fn parse_recipe(input: String, scale: f64) -> Result<Recipe, CooklangError> {
-    let parser = cooklang::CooklangParser::canonical();
+    let parser = cooklang::CooklangParser::new(
+        cooklang::Extensions::TIMER_DURATIONS,
+        cooklang::Converter::empty(),
+    );
     let (mut parsed, report) = parser
         .parse(&input)
         .into_result()
@@ -146,5 +152,30 @@ mod tests {
             .to_text(),
             "+ milk\n"
         );
+    }
+
+    #[test]
+    fn timers_have_durations() {
+        let recipe = parse_recipe(
+            "Bake for ~{1h20m-1h25m}, rest for ~{10%min}, then ~{30%sec}. Wait ~{a while}.".into(),
+            1.0,
+        )
+        .unwrap();
+        // Only the text timer warns.
+        let warnings: Vec<_> = recipe.warnings.iter().map(|w| w.message.as_str()).collect();
+        assert_eq!(warnings, ["Invalid timer quantity: missing unit"]);
+        let durations: Vec<_> = recipe.timers.iter().map(|t| t.duration).collect();
+        let d = |min_seconds, max_seconds| {
+            Some(recipe::TimerDuration {
+                min_seconds,
+                max_seconds,
+            })
+        };
+        assert_eq!(
+            durations[..3],
+            [d(4800.0, 5100.0), d(600.0, 600.0), d(30.0, 30.0)]
+        );
+        // Text with no unit stays text, with no duration.
+        assert_eq!(durations[3], None);
     }
 }

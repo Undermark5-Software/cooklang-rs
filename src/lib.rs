@@ -132,6 +132,11 @@ bitflags! {
         const TIMER_REQUIRES_TIME      = 1 << 10;
         /// This extensions also enables [`Self::COMPONENT_MODIFIERS`].
         const INTERMEDIATE_PREPARATIONS = 1 << 11 | Self::COMPONENT_MODIFIERS.bits();
+        /// Read timers written as a duration instead of warning about a missing unit.
+        /// A value in one unit keeps it, and a range's unit applies to both ends:
+        /// `~{30-40%min}`, `~{1-3 seconds}`, `~{90 s}`. Compound durations, like
+        /// `~{1h20m}`, `~{1 hour 20 min}` or `~{1h20m-1h25m}`, become minutes.
+        const TIMER_DURATIONS          = 1 << 12;
 
         /// Enables a subset of extensions to maximize compatibility with other
         /// cooklang parsers.

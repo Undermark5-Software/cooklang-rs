@@ -499,3 +499,28 @@ fn count_units_never_mix() {
     sorted.sort();
     assert_eq!(sorted, ["1 head", "1 tsp", "2 cloves"]);
 }
+
+#[test]
+fn more_count_units() {
+    assert_eq!(
+        grouped("Add @essential oils{5%drops}.", 1.0),
+        ["essential oils = 5 drops"]
+    );
+    assert_eq!(
+        grouped("Add @onion soup mix{1%envelope}.", 2.0),
+        ["onion soup mix = 2 envelopes"]
+    );
+    assert_eq!(
+        grouped("Add @fresh thyme{2%branches}.", 0.5),
+        ["fresh thyme = 1 branch"]
+    );
+    assert_eq!(
+        grouped("Add @pie dough{2%crust}.", 1.0),
+        ["pie dough = 2 crusts"]
+    );
+    // pkg is another way to write package.
+    assert_eq!(
+        grouped("Add @mix{1%pkg} and @&mix{1%package}.", 1.0),
+        ["mix = 2 packages"]
+    );
+}

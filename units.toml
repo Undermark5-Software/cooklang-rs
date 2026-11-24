@@ -90,3 +90,36 @@ metric = [
 imperial = [
     { names = ["fahrenheit"], symbols = ["°F", "ºF", "℉", "F"], ratio = 0.55555555556, difference = 459.67 }
 ]
+
+[[quantity]]
+quantity = "count"
+# Each count unit stands alone; they never convert into each other. The first name is
+# the singular and the second the plural, picked by the amount.
+best = ["piece"]
+units = [
+    { names = ["clove", "cloves"], symbols = [], ratio = 1 },
+    { names = ["slice", "slices"], symbols = [], ratio = 1 },
+    { names = ["stalk", "stalks"], symbols = [], ratio = 1 },
+    { names = ["sprig", "sprigs"], symbols = [], ratio = 1 },
+    { names = ["pinch", "pinches"], symbols = [], ratio = 1 },
+    { names = ["dash", "dashes"], symbols = [], ratio = 1 },
+    { names = ["handful", "handfuls"], symbols = [], ratio = 1 },
+    { names = ["bunch", "bunches"], symbols = [], ratio = 1 },
+    { names = ["head", "heads"], symbols = [], ratio = 1 },
+    { names = ["can", "cans"], symbols = [], ratio = 1 },
+    { names = ["jar", "jars"], symbols = [], ratio = 1 },
+    { names = ["package", "packages"], symbols = [], ratio = 1 },
+    { names = ["packet", "packets"], symbols = [], ratio = 1 },
+    { names = ["stick", "sticks"], symbols = [], ratio = 1 },
+    { names = ["strip", "strips"], symbols = [], ratio = 1 },
+    { names = ["leaf", "leaves"], symbols = [], ratio = 1 },
+    { names = ["piece", "pieces"], symbols = [], ratio = 1 },
+    { names = ["bag", "bags"], symbols = [], ratio = 1 },
+    { names = ["box", "boxes"], symbols = [], ratio = 1 },
+    { names = ["loaf", "loaves"], symbols = [], ratio = 1 },
+    { names = ["ear", "ears"], symbols = [], ratio = 1 },
+    { names = ["scoop", "scoops"], symbols = [], ratio = 1 },
+    { names = ["tube", "tubes"], symbols = [], ratio = 1 },
+    { names = ["fillet", "fillets"], symbols = [], ratio = 1 },
+    { names = ["sheet", "sheets"], symbols = [], ratio = 1 },
+]

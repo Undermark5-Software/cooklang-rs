@@ -327,6 +327,28 @@ impl Unit {
             .or_else(|| self.aliases.first())
             .expect("symbol, name or alias in unit")
     }
+
+    /// For a [`PhysicalQuantity::Count`] unit, its name to show with `value`: the first
+    /// name (singular) for amounts up to 1, like `1 clove` or `1/2 clove`, and the second
+    /// (plural) otherwise, like `2 cloves` or `1-2 cloves`.
+    pub fn count_name(&self, value: &crate::quantity::Value) -> &str {
+        use crate::quantity::Value;
+        let largest = match value {
+            Value::Number(n) => n.value(),
+            Value::Range { end, .. } => end.value(),
+            Value::Text(_) => f64::INFINITY,
+        };
+        let singular = self
+            .names
+            .first()
+            .map(|n| &**n)
+            .unwrap_or_else(|| self.symbol());
+        if largest <= 1.0 {
+            singular
+        } else {
+            self.names.get(1).map(|n| &**n).unwrap_or(singular)
+        }
+    }
 }
 
 impl PartialEq for Unit {
@@ -439,6 +461,9 @@ pub enum PhysicalQuantity {
     Length,
     Temperature,
     Time,
+    /// Things counted by what they are, like cloves, slices or pinches. Each count
+    /// unit stands alone: they never convert into each other or into other units.
+    Count,
 }
 
 impl Recipe {
@@ -497,6 +522,27 @@ impl Quantity {
         }
 
         let unit_info = self.unit_info(converter);
+        if let Some(unit) = unit_info
+            .as_ref()
+            .filter(|u| u.physical_quantity == PhysicalQuantity::Count)
+        {
+            // A count unit only "converts" to itself, which just picks singular or plural.
+            if let ConvertTo::Unit(target) = to {
+                let target = match target {
+                    ConvertUnit::Unit(u) => Some(Arc::clone(u)),
+                    ConvertUnit::Key(key) => converter.find_unit_in(key, PhysicalQuantity::Count),
+                };
+                if target.as_deref() != Some(unit.as_ref()) {
+                    return Err(ConvertError::MixedQuantities {
+                        from: PhysicalQuantity::Count,
+                        to: target.map_or(PhysicalQuantity::Count, |t| t.physical_quantity),
+                    });
+                }
+            }
+            let name = unit.count_name(self.value()).to_string();
+            *self = Quantity::new(self.value().clone(), Some(name));
+            return Ok(());
+        }
         let original_system;
         let unit = match unit_info {
             Some(ref u) => {
@@ -536,6 +582,10 @@ impl Quantity {
         let Some(unit) = self.unit_info(converter) else {
             return Ok(());
         };
+        if unit.physical_quantity == PhysicalQuantity::Count {
+            // Counts never change unit; this only picks singular or plural.
+            return self.convert(ConvertTo::SameSystem, converter);
+        }
 
         // If configured, try fitting as a fraction
         if converter.should_fit_fraction(&unit)

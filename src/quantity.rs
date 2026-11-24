@@ -279,6 +279,8 @@ pub enum IncompatibleUnits {
     },
     #[error("Unknown units differ: '{a}' '{b}'")]
     UnknownDifferentUnits { a: String, b: String },
+    #[error("Different count units: '{a}' '{b}'")]
+    DifferentCountUnits { a: String, b: String },
 }
 
 impl Quantity {
@@ -318,6 +320,13 @@ impl Quantity {
                                 b: b_unit.physical_quantity,
                             });
                         }
+                        // Count units only add to themselves: cloves and slices don't mix.
+                        if a_unit.physical_quantity == PhysicalQuantity::Count && a_unit != b_unit {
+                            return Err(IncompatibleUnits::DifferentCountUnits {
+                                a: a.clone(),
+                                b: b.clone(),
+                            });
+                        }
                         // common unit is first one
                         Some(a_unit)
                     }
@@ -344,15 +353,21 @@ impl Quantity {
 
         // 2. Convert rhs to the unit of the first one if needed
         let mut rhs = rhs.clone();
-        if let Some(to) = convert_to {
-            rhs.convert(&to, converter)?;
+        if let Some(to) = &convert_to {
+            rhs.convert(to, converter)?;
         };
 
         // 3. Sum values
         let value = self.value.try_add(&rhs.value)?;
 
         // 4. New quantity
-        let qty = Quantity::new(value, self.unit.clone());
+        let unit = match &convert_to {
+            Some(u) if u.physical_quantity == PhysicalQuantity::Count => {
+                Some(u.count_name(&value).to_string())
+            }
+            _ => self.unit.clone(),
+        };
+        let qty = Quantity::new(value, unit);
 
         Ok(qty)
     }
@@ -413,6 +428,9 @@ impl TryAdd for Value {
 pub struct GroupedQuantity {
     /// known units
     known: EnumMap<PhysicalQuantity, Option<Quantity>>,
+    /// count units, one entry per unit (by its first name), since they don't mix
+    #[serde(default)]
+    count: std::collections::BTreeMap<String, Quantity>,
     /// unknown units
     unknown: HashMap<String, Quantity>,
     /// no units
@@ -457,6 +475,20 @@ impl GroupedQuantity {
         let unit_text = q.unit().unwrap();
         let info = q.unit_info(converter);
         match info {
+            Some(unit) if unit.physical_quantity == PhysicalQuantity::Count => {
+                let key = unit
+                    .names
+                    .first()
+                    .map_or_else(|| unit.symbol(), |n| n)
+                    .to_string();
+                if let Some(stored) = self.count.get_mut(&key) {
+                    add!(stored, q, converter, self.other);
+                } else {
+                    let mut q = q.clone();
+                    let _ = q.fit(converter);
+                    self.count.insert(key, q);
+                }
+            }
             Some(unit) => {
                 if let Some(stored) = &mut self.known[unit.physical_quantity] {
                     add!(stored, q, converter, self.other);
@@ -504,6 +536,7 @@ impl GroupedQuantity {
         self.known
             .values()
             .filter_map(|q| q.as_ref())
+            .chain(self.count.values())
             .chain(self.unknown.values())
             .chain(self.other.iter())
             .chain(self.no_unit.iter())
@@ -511,6 +544,7 @@ impl GroupedQuantity {
 
     pub fn len(&self) -> usize {
         self.known.values().filter(|q| q.is_some()).count()
+            + self.count.len()
             + self.unknown.len()
             + self.other.len()
             + (self.no_unit.is_some() as usize)
@@ -524,6 +558,7 @@ impl GroupedQuantity {
             .known
             .into_values()
             .flatten()
+            .chain(self.count.into_values())
             .chain(self.unknown.into_values())
             .chain(self.other.into_iter())
             .chain(self.no_unit.into_iter())

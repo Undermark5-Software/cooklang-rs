@@ -454,3 +454,48 @@ fn bundled_unit_aliases() {
         assert_eq!(&*unit.names[0], name, "{alias}");
     }
 }
+
+fn grouped(input: &str, scale: f64) -> Vec<String> {
+    let parser = CooklangParser::new(Extensions::all(), cooklang::Converter::bundled());
+    let mut recipe = parser.parse(input).into_output().unwrap();
+    recipe.scale(scale, parser.converter());
+    recipe
+        .group_ingredients(parser.converter())
+        .iter()
+        .map(|g| format!("{} = {}", g.ingredient.name, g.quantity))
+        .collect()
+}
+
+#[test]
+fn count_units_combine_their_spellings() {
+    let list = grouped("Add @garlic{1%clove}, then @&garlic{3%cloves}.", 1.0);
+    assert_eq!(list, ["garlic = 4 cloves"]);
+}
+
+#[test]
+fn count_units_pick_singular_or_plural() {
+    assert_eq!(grouped("Add @salt{1%pinch}.", 2.0), ["salt = 2 pinches"]);
+    assert_eq!(grouped("Add @bread{2%slices}.", 0.5), ["bread = 1 slice"]);
+    assert_eq!(grouped("Add @beans{1%cans}.", 1.0), ["beans = 1 can"]);
+    assert_eq!(
+        grouped("Add @garlic{1-2%cloves}.", 1.0),
+        ["garlic = 1-2 cloves"]
+    );
+}
+
+#[test]
+fn count_units_never_mix() {
+    // Different count units, or a count and a measure, stay separate amounts.
+    let list = grouped(
+        "Add @garlic{2%cloves}, then @&garlic{1%tsp} and @&garlic{1%head}.",
+        1.0,
+    );
+    assert_eq!(list.len(), 1);
+    let amounts: Vec<&str> = list[0]
+        .trim_start_matches("garlic = ")
+        .split(", ")
+        .collect();
+    let mut sorted = amounts.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["1 head", "1 tsp", "2 cloves"]);
+}

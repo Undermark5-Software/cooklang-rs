@@ -661,7 +661,8 @@ impl<'i> RecipeCollector<'i, '_> {
                                 } => {
                                     (label!(new, b_q.to_string()), label!(old, a_q.to_string()))
                                 }
-                                crate::quantity::IncompatibleUnits::UnknownDifferentUnits { .. } => {
+                                crate::quantity::IncompatibleUnits::UnknownDifferentUnits { .. }
+                                | crate::quantity::IncompatibleUnits::DifferentCountUnits { .. } => {
                                     (label!(new), label!(old))
                                 }
                             };

@@ -603,7 +603,8 @@ struct FractionLookupTable(Vec<(i16, (u8, u8))>);
 
 impl FractionLookupTable {
     const FIX_RATIO: f64 = 1e4;
-    const DENOMS: &'static [u8] = &[2, 3, 4, 8, 10, 16];
+    // Sixths are here for cups (1/6 c is 1/3 c halved).
+    const DENOMS: &'static [u8] = &[2, 3, 4, 6, 8, 10, 16];
 
     pub fn new() -> Self {
         #[allow(clippy::const_is_empty)]
@@ -671,6 +672,10 @@ impl FractionLookupTable {
     }
 }
 
+/// Relative error treated as floating point noise rather than a real difference. Unit
+/// ratios have about 9 significant digits, so conversions are off by around 1e-7.
+const FLOAT_EPSILON: f64 = 1e-6;
+
 impl Number {
     /// Tries to create a new approximate number within a margin of error.
     ///
@@ -704,7 +709,9 @@ impl Number {
             return None;
         }
 
-        let max_err = accuracy as f64 * value;
+        // `accuracy` is how far a fraction may stray on purpose; FLOAT_EPSILON only absorbs
+        // floating point noise, like 3 tsp converting to 0.9999995 tbsp.
+        let max_err = (accuracy as f64).max(FLOAT_EPSILON) * value;
 
         let whole = value.trunc() as u32;
         let decimal = value.fract();

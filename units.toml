@@ -18,16 +18,27 @@ milli = ["m"]
 
 [fractions]
 metric = false
-imperial = true
+# Fitting picks how to write an amount without changing it: only differences under 0.1%,
+# too small to measure in a kitchen (499.999 lb is 500 lb), may be rounded away.
+imperial = { enabled = true, accuracy = 0.001 }
 
 [fractions.quantity]
 time = false
 temperature = false
 
+# Fitting picks the largest unit that gives an allowed amount, so `min` keeps small
+# amounts out of big units: 1/8 cup and up, then tablespoons from 1, then teaspoons.
+# `denominators` lists the fractions a cook writes: cups in halves, thirds, quarters,
+# sixths and eighths; teaspoons in thirds and eighths; pounds in eighths.
 [fractions.unit]
-tsp = { max_whole = 5, max_denominator = 8 }
-tbsp = { max_whole = 4, max_denominator = 3 }
-lb = { max_denominator = 8 }
+tsp = { max_whole = 5, max_denominator = 8, denominators = [2, 3, 4, 8] }
+tbsp = { max_whole = 15, max_denominator = 2, min = 1 }
+cup = { max_denominator = 8, denominators = [2, 3, 4, 6, 8], min = 0.125 }
+lb = { max_denominator = 8, denominators = [2, 4, 8], min = 1 }
+# Quarts and pints only appear when the recipe uses them or for liquids (see `written`).
+qt = { denominators = [2, 4] }
+pt = { denominators = [2, 4] }
+ft = { min = 1 }
 
 [[quantity]]
 quantity = "volume"

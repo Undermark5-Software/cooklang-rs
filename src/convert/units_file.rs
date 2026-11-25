@@ -146,6 +146,36 @@ pub struct FractionsConfigHelper {
     pub max_denominator: Option<u8>,
     /// Max whole number allowed. Defaults to [`u32::MAX`].
     pub max_whole: Option<u32>,
+    /// The smallest amount worth writing in the unit when fitting, like `0.25` for cups.
+    /// Defaults to 0.
+    pub min: Option<f64>,
+    /// The only denominators allowed, like `[2, 3, 4, 6, 8]` for cups, so `max_denominator`
+    /// doesn't also let in fifths and sevenths. Defaults to every one up to `max_denominator`.
+    pub denominators: Option<Denominators>,
+}
+
+/// A set of fraction denominators, from 2 to 31.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Denominators(pub u32);
+
+impl Denominators {
+    pub fn contains(self, denominator: u32) -> bool {
+        denominator == 1 || (denominator < 32 && self.0 & (1 << denominator) != 0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Denominators {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let list = Vec::<u8>::deserialize(deserializer)?;
+        let mut mask = 0u32;
+        for d in list {
+            if !(1..32).contains(&d) {
+                return Err(serde::de::Error::custom(format!("denominator {d} is not between 1 and 31")));
+            }
+            mask |= 1 << d;
+        }
+        Ok(Denominators(mask))
+    }
 }
 
 impl FractionsConfigHelper {
@@ -158,6 +188,8 @@ impl FractionsConfigHelper {
             accuracy: self.accuracy.or(other.accuracy),
             max_denominator: self.max_denominator.or(other.max_denominator),
             max_whole: self.max_whole.or(other.max_whole),
+            min: self.min.or(other.min),
+            denominators: self.denominators.or(other.denominators),
         }
     }
 
@@ -174,6 +206,8 @@ impl FractionsConfigHelper {
                 .unwrap_or(d.max_denominator)
                 .clamp(1, 16),
             max_whole: self.max_whole.unwrap_or(d.max_whole),
+            min: self.min.unwrap_or(d.min).max(0.0),
+            denominators: self.denominators,
         }
     }
 }

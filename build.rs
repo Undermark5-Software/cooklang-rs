@@ -115,12 +115,32 @@ fn generate_bundled() {
                         .map(|v| v.as_integer().unwrap() as u32)
                         .map(some)
                         .unwrap_or_else(none);
+                    // Accepts `min = 1` as well as `min = 0.25`.
+                    let min = v
+                        .get("min")
+                        .map(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)).unwrap())
+                        .map(some)
+                        .unwrap_or_else(none);
+
+                    let denominators = v
+                        .get("denominators")
+                        .map(|v| {
+                            let mask = v.as_array().unwrap().iter().fold(0u32, |mask, d| {
+                                let d = d.as_integer().unwrap();
+                                assert!((1..32).contains(&d), "denominator {d} out of range");
+                                mask | (1 << d)
+                            });
+                            quote! { Some(Denominators(#mask)) }
+                        })
+                        .unwrap_or_else(none);
 
                     quote! { FractionsConfigWrapper::Custom(FractionsConfigHelper {
                         enabled: #enabled,
                         accuracy: #accuracy,
                         max_denominator: #max_denominator,
                         max_whole: #max_whole,
+                        min: #min,
+                        denominators: #denominators,
                     }) }
                 } else {
                     panic!("bad fractions value")

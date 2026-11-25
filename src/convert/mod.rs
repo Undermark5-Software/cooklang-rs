@@ -241,6 +241,50 @@ pub(crate) struct FractionsConfig {
     pub accuracy: f32,
     pub max_denominator: u8,
     pub max_whole: u32,
+    /// The smallest amount worth writing in this unit when fitting. Below it, a smaller
+    /// unit is used, so `2 oz` isn't written as `1/8 lb`.
+    pub min: f64,
+    /// The only denominators allowed, if limited.
+    pub denominators: Option<units_file::Denominators>,
+}
+
+impl FractionsConfig {
+    /// `value` written as this config allows: a whole number or an allowed fraction within
+    /// `accuracy`, at most `max_whole`, and at least `min`. The result keeps the error, so
+    /// its `value()` is still `value`.
+    pub(crate) fn approx(&self, value: f64) -> Option<Number> {
+        let number = Number::new_approx(value, self.accuracy, self.max_denominator, self.max_whole)?;
+        let (written, den) = written_and_denominator(number);
+        // `max_whole` caps the whole amount here, so 5 1/4 tsp is over a 5 tsp cap.
+        if written < self.min - 1e-9 || written > self.max_whole as f64 + 1e-9 {
+            return None;
+        }
+        if let Some(allowed) = self.denominators {
+            if !allowed.contains(den) {
+                return None;
+            }
+        }
+        Some(number)
+    }
+}
+
+/// A number as written, without its approximation error, and its denominator in lowest
+/// terms (1 for whole numbers).
+pub(crate) fn written_and_denominator(number: Number) -> (f64, u32) {
+    match number {
+        Number::Regular(v) => (v, 1),
+        Number::Fraction { whole, num, den, .. } => {
+            if num == 0 {
+                return (whole as f64, 1);
+            }
+            let g = gcd(num, den);
+            (whole as f64 + num as f64 / den as f64, den / g)
+        }
+    }
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 impl Default for FractionsConfig {
@@ -250,6 +294,8 @@ impl Default for FractionsConfig {
             accuracy: 0.05,
             max_denominator: 4,
             max_whole: u32::MAX,
+            min: 0.0,
+            denominators: None,
         }
     }
 }
@@ -577,6 +623,78 @@ impl Quantity {
     ///
     /// For example, `1000 ml` would be converted to `1 l`.
     #[tracing::instrument(level = "trace", skip_all)]
+    /// How a cook would write this amount, in US units, without changing it.
+    ///
+    /// - Volume: one cup, tablespoon or teaspoon amount if one writes it exactly; otherwise
+    ///   two parts, with the fewest parts winning and ties going to tablespoons +
+    ///   teaspoons under 1/4 cup and to a cup fraction + the rest from 1/4 cup up
+    ///   (`2 tbsp + 3/4 tsp`, `1 c + 1 tbsp`). Teaspoon sixteenths drop to the eighth
+    ///   below, the only rounding; 1/16 and 1/32 tsp are named `a pinch` and `a smidgen`.
+    /// - Weight: pounds when a pound fraction writes it, ounces under a pound, otherwise
+    ///   whole pounds and ounces (`2 lb 13 oz`).
+    ///
+    /// Each unit's fraction settings (`denominators`, `min`, `max_whole`) decide what is
+    /// allowed. Returns `None` for ranges, text, metric and other quantities, and for
+    /// amounts no combination writes exactly; show those as they are.
+    ///
+    /// For a `liquid` (broth, milk, water…), quarts join the volume ladder from 1 quart up
+    /// (8 cups → `2 qt`). An amount the recipe wrote in quarts or pints keeps that unit
+    /// while it is at least 1 of it (3 qt × 4 → `12 qt`) and uses cups below.
+    pub fn written(&self, converter: &Converter, liquid: bool) -> Option<WrittenAmount> {
+        let Value::Number(number) = self.value() else {
+            return None;
+        };
+        let unit = self.unit_info(converter)?;
+        if unit.system != Some(System::Imperial) {
+            return None;
+        }
+        let mut units: Vec<Arc<Unit>> = converter.best[unit.physical_quantity]
+            .conversions(System::Imperial)
+            .0
+            .iter()
+            .map(|&(_, id)| Arc::clone(&converter.all_units[id]))
+            .collect();
+        units.sort_by(|a, b| b.ratio.partial_cmp(&a.ratio).unwrap_or(std::cmp::Ordering::Equal));
+        let total = number.value() * unit.ratio;
+        let in_ladder = units.iter().any(|u| u.symbol() == unit.symbol());
+        match unit.physical_quantity {
+            PhysicalQuantity::Volume => {
+                let largest = units.first()?;
+                let one = |part: WrittenPart| WrittenAmount { parts: vec![part], separator: " + " };
+                if !in_ladder && unit.ratio <= largest.ratio {
+                    // Like fl oz: cups when it's a whole number of 1/4 or 1/3 cups
+                    // (8 fl oz is 1 c, 6 fl oz is 3/4 c), otherwise as the recipe wrote it.
+                    let cups = total / largest.ratio;
+                    return [1.0_f64, 2.0, 3.0, 4.0]
+                        .iter()
+                        .find(|den| {
+                            let n = cups * **den;
+                            n >= 0.999 && (n - n.round()).abs() <= n * SAME
+                        })
+                        .map(|_| one(WrittenPart::new(cups, largest)));
+                }
+                // The recipe's own pints or quarts, while there is at least one.
+                if !in_ladder && number.value() >= 1.0 - SAME {
+                    if let Some(part) = exactly_in(total, &unit, converter) {
+                        return Some(one(part));
+                    }
+                }
+                if liquid {
+                    if let Some(quart) = converter.find_unit_in("qt", PhysicalQuantity::Volume) {
+                        if total >= quart.ratio * (1.0 - SAME) {
+                            if let Some(part) = exactly_in(total, &quart, converter) {
+                                return Some(one(part));
+                            }
+                        }
+                    }
+                }
+                written_volume(total, &units, converter)
+            }
+            PhysicalQuantity::Mass if in_ladder => written_weight(total, &units, converter),
+            _ => None,
+        }
+    }
+
     pub fn fit(&mut self, converter: &Converter) -> Result<(), ConvertError> {
         // only known units can be fitted
         let Some(unit) = self.unit_info(converter) else {
@@ -585,6 +703,12 @@ impl Quantity {
         if unit.physical_quantity == PhysicalQuantity::Count {
             // Counts never change unit; this only picks singular or plural.
             return self.convert(ConvertTo::SameSystem, converter);
+        }
+        // A US unit outside the fitted ones (quarts, pints, fl oz) is kept as written, so
+        // 3 quarts of stock isn't turned into 12 cups; `written` decides how to show it.
+        if unit.system == Some(System::Imperial) && !is_fitted_unit(&unit, converter) {
+            self.try_fraction(converter);
+            return Ok(());
         }
 
         // If configured, try fitting as a fraction
@@ -613,17 +737,15 @@ impl Quantity {
         target_system: Option<System>,
         converter: &Converter,
     ) -> Result<bool, ConvertError> {
-        let approx = |val: f64, cfg: FractionsConfig| {
-            Number::new_approx(val, cfg.accuracy, cfg.max_denominator, cfg.max_whole)
-        };
+        let approx = |val: f64, cfg: FractionsConfig| cfg.approx(val);
 
         let Some(system) = target_system else {
             return Ok(self.try_fraction(converter)); // no system, just keep the same unit
         };
 
-        let value = match self.value() {
-            Value::Number(n) => n.value(),
-            Value::Range { start, .. } => start.value(),
+        let (value, range_end) = match self.value() {
+            Value::Number(n) => (n.value(), None),
+            Value::Range { start, end } => (start.value(), Some(end.value())),
             Value::Text(ref t) => return Err(ConvertError::TextValue(t.clone())),
         };
 
@@ -642,21 +764,20 @@ impl Quantity {
                     return None;
                 }
                 let new_value = converter.convert_f64(value, unit, new_unit);
+                // Within the unit's limits: min, denominators, max whole.
                 let new_value = approx(new_value, cfg)?;
+                // A range's end must be allowed too, so 4-6 tbsp doesn't become 1/4-3/8 cup.
+                if let Some(end) = range_end {
+                    approx(converter.convert_f64(end, unit, new_unit), cfg)?;
+                }
                 Some((new_value, new_unit))
             });
 
-        let selected = possible_conversions.min_by(|(a, _), (b, _)| {
-            let key = |v| match v {
-                Number::Fraction {
-                    den, err, whole, ..
-                } => (den, whole as f64, err.abs()),
-                Number::Regular(whole) => (1, whole, 0.0),
-            };
-            let a = key(*a);
-            let b = key(*b);
-            a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Less)
-        });
+        // The largest unit that gives an allowed amount, as a cook would write it: `1/4 cup`
+        // rather than `4 tbsp`, but `2 tbsp` rather than `1/8 cup`. Each unit's `min` and
+        // fraction limits decide what is allowed.
+        let selected = possible_conversions
+            .max_by(|(_, a), (_, b)| a.ratio.partial_cmp(&b.ratio).unwrap_or(std::cmp::Ordering::Equal));
 
         let Some((new_value, new_unit)) = selected else {
             return Ok(false);
@@ -964,4 +1085,181 @@ pub enum ConvertError {
 
     #[error(transparent)]
     UnknownUnit(#[from] UnknownUnit),
+}
+
+/// An amount as a cook would write it, from [`Quantity::written`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct WrittenAmount {
+    pub parts: Vec<WrittenPart>,
+    /// How the parts are joined: `" + "` for measures, `" "` for pounds and ounces.
+    pub separator: &'static str,
+}
+
+/// One part of a [`WrittenAmount`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct WrittenPart {
+    /// The amount as written, a whole number or an allowed fraction.
+    pub value: f64,
+    pub unit: Arc<Unit>,
+    /// A name to show instead, like `a pinch`.
+    pub name: Option<&'static str>,
+}
+
+impl WrittenPart {
+    fn new(value: f64, unit: &Arc<Unit>) -> Self {
+        Self { value, unit: Arc::clone(unit), name: None }
+    }
+}
+
+impl std::fmt::Display for WrittenAmount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, part) in self.parts.iter().enumerate() {
+            if i > 0 {
+                f.write_str(self.separator)?;
+            }
+            match part.name {
+                Some(name) => f.write_str(name)?,
+                None => {
+                    let value = Number::new_approx(part.value, 0.001, 16, u32::MAX)
+                        .unwrap_or(Number::Regular(part.value));
+                    write!(f, "{} {}", value, part.unit.symbol())?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Relative tolerance for "the same amount" in [`Quantity::written`].
+const SAME: f64 = 1e-6;
+
+/// `total` (in base units) written in `unit` as its fraction settings allow.
+fn exactly_in(total: f64, unit: &Arc<Unit>, converter: &Converter) -> Option<WrittenPart> {
+    let cfg = converter.fractions_config(unit);
+    if !cfg.enabled || total <= 0.0 {
+        return None;
+    }
+    let number = cfg.approx(total / unit.ratio)?;
+    Some(WrittenPart::new(written_and_denominator(number).0, unit))
+}
+
+/// Volume: `units` are cup, tablespoon, teaspoon, largest first.
+fn written_volume(total: f64, units: &[Arc<Unit>], converter: &Converter) -> Option<WrittenAmount> {
+    let [cup, tbsp, tsp] = units else {
+        return None;
+    };
+    let one = |part: WrittenPart| WrittenAmount { parts: vec![part], separator: " + " };
+    let in_tsp = total / tsp.ratio;
+    for (amount, name) in [(1.0 / 16.0, "a pinch"), (1.0 / 32.0, "a smidgen")] {
+        if (in_tsp - amount).abs() <= amount * SAME {
+            return Some(one(WrittenPart { name: Some(name), ..WrittenPart::new(amount, tsp) }));
+        }
+    }
+    // Teaspoon sixteenths drop to the eighth below: 3/16 tsp is written 1/8 tsp.
+    let sixteenths = in_tsp * 16.0;
+    let total = if sixteenths > 1.5 && (sixteenths - sixteenths.round()).abs() <= sixteenths * SAME
+        && sixteenths.round() as u64 % 2 == 1
+    {
+        (sixteenths.round() - 1.0) / 16.0 * tsp.ratio
+    } else {
+        total
+    };
+
+    for unit in [cup, tbsp, tsp] {
+        if let Some(part) = exactly_in(total, unit, converter) {
+            return Some(one(part));
+        }
+    }
+
+    // A teaspoon amount inside a split: thirds are only for a teaspoon amount on its
+    // own (1 1/3 tsp), never next to another unit.
+    let tsp_in_split = |rest: f64| {
+        exactly_in(rest, tsp, converter).filter(|part| {
+            let thirds = part.value * 3.0;
+            (part.value * 8.0 - (part.value * 8.0).round()).abs() < 1e-6
+                || (thirds - thirds.round()).abs() > 1e-6
+        })
+    };
+    // The rest of a split: one spoon amount, or whole tablespoons + teaspoons.
+    let spoons = |rest: f64| -> Option<Vec<WrittenPart>> {
+        if let Some(part) = exactly_in(rest, tbsp, converter).or_else(|| tsp_in_split(rest)) {
+            return Some(vec![part]);
+        }
+        let whole = ((rest / tbsp.ratio) * (1.0 + SAME)).floor();
+        if whole < 1.0 {
+            return None;
+        }
+        let tsp_part = tsp_in_split(rest - whole * tbsp.ratio)?;
+        Some(vec![WrittenPart::new(whole, tbsp), tsp_part])
+    };
+    let quarter_cup = cup.ratio / 4.0;
+    let prefer_cups = total >= quarter_cup * (1.0 - SAME);
+    // (parts, tie-break, larger cup first)
+    let mut best: Option<((usize, bool, f64), Vec<WrittenPart>)> = None;
+    let mut consider = |parts: Vec<WrittenPart>, has_cup: bool, cup_amount: f64| {
+        let key = (parts.len(), has_cup != prefer_cups, -cup_amount);
+        if best.as_ref().is_none_or(|(k, _)| key < *k) {
+            best = Some((key, parts));
+        }
+    };
+    if let Some(parts) = spoons(total) {
+        consider(parts, false, 0.0);
+    }
+    let cup_cfg = converter.fractions_config(cup);
+    let in_cups = total / cup.ratio;
+    for den in 1..=cup_cfg.max_denominator as u32 {
+        if !cup_cfg.denominators.is_none_or(|d| d.contains(den)) {
+            continue;
+        }
+        let mut num = 1;
+        while (num as f64 / den as f64) < in_cups * (1.0 - SAME) {
+            let amount = num as f64 / den as f64;
+            num += 1;
+            if amount < cup_cfg.min - 1e-9 || amount.trunc() > cup_cfg.max_whole as f64 {
+                continue;
+            }
+            if let Some(rest) = spoons(total - amount * cup.ratio) {
+                let mut parts = vec![WrittenPart::new(amount, cup)];
+                parts.extend(rest);
+                consider(parts, true, amount);
+            }
+        }
+    }
+    best.map(|(_, parts)| WrittenAmount { parts, separator: " + " })
+}
+
+/// Weight: `units` are pound, ounce, largest first.
+fn written_weight(total: f64, units: &[Arc<Unit>], converter: &Converter) -> Option<WrittenAmount> {
+    let [lb, oz] = units else {
+        return None;
+    };
+    let one = |part: WrittenPart| Some(WrittenAmount { parts: vec![part], separator: " " });
+    if let Some(part) = exactly_in(total, lb, converter) {
+        return one(part);
+    }
+    let in_lb = total / lb.ratio;
+    if in_lb < 1.0 - SAME {
+        return exactly_in(total, oz, converter).and_then(one);
+    }
+    let whole = (in_lb * (1.0 + SAME)).floor();
+    let rest = (total - whole * lb.ratio) / oz.ratio;
+    let cfg = converter.fractions_config(oz);
+    let rest = cfg.approx(rest).map(|n| written_and_denominator(n).0).unwrap_or(rest);
+    Some(WrittenAmount {
+        parts: vec![WrittenPart::new(whole, lb), WrittenPart::new(rest, oz)],
+        separator: " ",
+    })
+}
+
+/// Whether `unit` is one of the units fitting writes amounts in for its quantity and
+/// system (cups, tablespoons and teaspoons; pounds and ounces).
+fn is_fitted_unit(unit: &Unit, converter: &Converter) -> bool {
+    let Some(system) = unit.system else {
+        return true;
+    };
+    converter.best[unit.physical_quantity]
+        .conversions(system)
+        .0
+        .iter()
+        .any(|&(_, id)| converter.all_units[id].symbol() == unit.symbol())
 }

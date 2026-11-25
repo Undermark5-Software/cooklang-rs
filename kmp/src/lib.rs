@@ -12,6 +12,7 @@
 mod aisle;
 mod diagnostics;
 mod metadata;
+mod parser;
 mod quantity;
 mod recipe;
 mod shopping_list;
@@ -19,6 +20,7 @@ mod shopping_list;
 pub use aisle::*;
 pub use diagnostics::*;
 pub use metadata::*;
+pub use parser::*;
 pub use quantity::*;
 pub use recipe::*;
 pub use shopping_list::*;
@@ -31,25 +33,11 @@ pub use shopping_list::*;
 /// Parses with every cooklang-rs extension and the bundled units, so ranges, modifiers,
 /// intermediate preparations and timers written as durations (`~{1h20m}`) all work.
 /// Scaling fits amounts to the best unit, e.g. `3 tsp` becomes `1 tbsp`. Every timer in
-/// a time unit has a [`recipe::TimerDuration`].
+/// a time unit has a [`recipe::TimerDuration`]. Uses the default settings; see
+/// [`RecipeParser`] to change them.
 #[uniffi::export(default(scale = 1.0))]
 pub fn parse_recipe(input: String, scale: f64) -> Result<Recipe, CooklangError> {
-    let parser =
-        cooklang::CooklangParser::new(cooklang::Extensions::all(), cooklang::Converter::bundled());
-    let (mut parsed, report) = parser
-        .parse(&input)
-        .into_result()
-        .map_err(|report| CooklangError::from_report(&report, &input))?;
-    parsed.scale(scale, parser.converter());
-
-    let metadata = metadata::convert(&parsed.metadata, parser.converter());
-    let warnings = diagnostics::diagnostics(&report, &input);
-    Ok(recipe::convert(
-        &parsed,
-        parser.converter(),
-        metadata,
-        warnings,
-    ))
+    RecipeParser::new(None)?.parse(input, scale)
 }
 
 /// Converts a count or index to Kotlin's `Int`, saturating on overflow.
@@ -109,7 +97,10 @@ mod tests {
         let CooklangError::Parse {
             reason,
             diagnostics,
-        } = err;
+        } = err
+        else {
+            panic!("expected a parse error");
+        };
         // Timers must have a time.
         assert_eq!(reason, "Invalid timer: missing quantity");
         let error = &diagnostics[0];
@@ -195,7 +186,9 @@ mod tests {
             ("Wait ~{2%cups}.", "Timer unit is not time: c"),
             ("Wait ~{1%week}.", "Unknown timer unit: week"),
         ] {
-            let CooklangError::Parse { reason, .. } = parse_recipe(input.into(), 1.0).unwrap_err();
+            let CooklangError::Parse { reason, .. } = parse_recipe(input.into(), 1.0).unwrap_err() else {
+                panic!("expected a parse error");
+            };
             assert_eq!(reason, expected, "{input}");
         }
     }
@@ -209,7 +202,7 @@ mod tests {
             .iter()
             .map(|i| i.amount.as_ref().unwrap().format())
             .collect();
-        assert_eq!(amounts, ["2 - 4 tsp", "2 tbsp"]);
+        assert_eq!(amounts, ["2 - 4 tsp", "1/8 c"]);
     }
 
     #[test]

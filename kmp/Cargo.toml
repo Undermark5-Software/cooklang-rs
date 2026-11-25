@@ -13,7 +13,9 @@ crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 cooklang = { path = "..", default-features = false, features = ["aisle", "bundled_units", "shopping_list"] }
+serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9.34"
+toml = "1.1"
 thiserror = "2"
 # Must stay on the 0.32 line that oxikt's generator targets.
 uniffi = "0.32"

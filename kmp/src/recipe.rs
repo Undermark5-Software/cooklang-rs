@@ -175,6 +175,7 @@ impl RecipeReference {
 pub(crate) fn convert(
     recipe: &cooklang::Recipe,
     converter: &cooklang::Converter,
+    liquids: &crate::parser::Liquids,
     metadata: Metadata,
     warnings: Vec<Diagnostic>,
 ) -> Recipe {
@@ -198,20 +199,23 @@ pub(crate) fn convert(
             .ingredients
             .iter()
             .zip(&ingredient_sections)
-            .map(|(i, section)| ingredient(i, *section))
+            .map(|(i, section)| ingredient(i, *section, converter, liquids))
             .collect(),
         ingredient_list: recipe
             .group_ingredients(converter)
             .into_iter()
             .filter(|grouped| grouped.ingredient.modifiers().should_be_listed())
-            .map(|grouped| ListedIngredient {
-                index: crate::int(grouped.index),
-                amounts: grouped.quantity.iter().map(Amount::from).collect(),
+            .map(|grouped| {
+                let liquid = is_liquid(grouped.ingredient, liquids);
+                ListedIngredient {
+                    index: crate::int(grouped.index),
+                    amounts: grouped.quantity.iter().map(|q| Amount::new(q, converter, liquid)).collect(),
+                }
             })
             .collect(),
-        cookware: recipe.cookware.iter().map(cookware).collect(),
+        cookware: recipe.cookware.iter().map(|c| cookware(c, converter)).collect(),
         timers: recipe.timers.iter().map(|t| timer(t, converter)).collect(),
-        inline_quantities: recipe.inline_quantities.iter().map(Amount::from).collect(),
+        inline_quantities: recipe.inline_quantities.iter().map(|q| Amount::new(q, converter, false)).collect(),
         warnings,
     }
 }
@@ -253,7 +257,19 @@ fn item(item: &core::Item) -> Item {
     }
 }
 
-fn ingredient(ingredient: &core::Ingredient, section: usize) -> Ingredient {
+/// Whether the ingredient is a liquid, by its name or its alias.
+fn is_liquid(ingredient: &core::Ingredient, liquids: &crate::parser::Liquids) -> bool {
+    liquids.contains(&ingredient.name)
+        || ingredient.alias.as_deref().is_some_and(|alias| liquids.contains(alias))
+}
+
+fn ingredient(
+    ingredient: &core::Ingredient,
+    section: usize,
+    converter: &cooklang::Converter,
+    liquids: &crate::parser::Liquids,
+) -> Ingredient {
+    let liquid = is_liquid(ingredient, liquids);
     use core::IngredientReferenceTarget as Target;
     let relation = match ingredient.relation.references_to() {
         None => IngredientRelation::Definition {
@@ -279,7 +295,7 @@ fn ingredient(ingredient: &core::Ingredient, section: usize) -> Ingredient {
         name: ingredient.name.clone(),
         alias: ingredient.alias.clone(),
         display_name: ingredient.display_name().into_owned(),
-        amount: ingredient.quantity.as_ref().map(Amount::from),
+        amount: ingredient.quantity.as_ref().map(|q| Amount::new(q, converter, liquid)),
         note: ingredient.note.clone(),
         reference: ingredient.reference.as_ref().map(|r| RecipeReference {
             name: r.name.clone(),
@@ -291,12 +307,12 @@ fn ingredient(ingredient: &core::Ingredient, section: usize) -> Ingredient {
     }
 }
 
-fn cookware(cookware: &core::Cookware) -> Cookware {
+fn cookware(cookware: &core::Cookware, converter: &cooklang::Converter) -> Cookware {
     Cookware {
         name: cookware.name.clone(),
         alias: cookware.alias.clone(),
         display_name: cookware.display_name().to_string(),
-        amount: cookware.quantity.as_ref().map(Amount::from),
+        amount: cookware.quantity.as_ref().map(|q| Amount::new(q, converter, false)),
         note: cookware.note.clone(),
         optional: cookware.modifiers().is_optional(),
         hidden: cookware.modifiers().is_hidden(),
@@ -307,7 +323,7 @@ fn cookware(cookware: &core::Cookware) -> Cookware {
 fn timer(timer: &core::Timer, converter: &cooklang::Converter) -> Timer {
     Timer {
         name: timer.name.clone(),
-        amount: timer.quantity.as_ref().map(Amount::from),
+        amount: timer.quantity.as_ref().map(|q| Amount::new(q, converter, false)),
         duration: timer.quantity.as_ref().and_then(|q| duration(q, converter)),
     }
 }

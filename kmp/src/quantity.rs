@@ -8,20 +8,86 @@ use cooklang::quantity::{Quantity as CoreQuantity, Value as CoreValue};
 use crate::recipe::Ingredient;
 
 /// A quantity with an optional unit, like `2 cups` or `a pinch`.
+///
+/// `quantity` and `unit` are the exact amount, for adding amounts up. [`Amount::format`]
+/// is how a cook would write it, which can differ: 3/16 tsp is written `1/8 tsp`.
 #[derive(uniffi::Record, Debug, Clone, PartialEq)]
 pub struct Amount {
     pub quantity: Value,
     pub unit: Option<String>,
+    /// The amount written in more than one unit or by name, like `2 lb` and `13 oz`,
+    /// `2 tbsp` and `3/4 tsp`, or `a pinch`. Empty when one plain amount writes it.
+    pub parts: Vec<AmountPart>,
+    /// The written form, when it was worked out from the parsed recipe. Amounts added
+    /// up outside a recipe have none and are formatted from `quantity`.
+    pub display: Option<String>,
+}
+
+/// One part of an [`Amount`] as written.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct AmountPart {
+    /// The value as written, like `0.75` for `3/4 tsp`.
+    pub value: f64,
+    pub unit: String,
+    /// Ready to show: `3/4 tsp`, or a name like `a pinch`.
+    pub text: String,
 }
 
 #[uniffi::export]
 impl Amount {
-    /// Formats the amount for display, e.g. `1 1/2 tsp` or `2/3 cups`.
+    /// The amount as a cook would write it, e.g. `1 1/2 tsp`, `2 tbsp + 3/4 tsp`,
+    /// `2 lb 13 oz` or `a pinch`.
     pub fn format(&self) -> String {
-        match (self.quantity.format(), &self.unit) {
-            (Some(quantity), Some(unit)) => format!("{quantity} {unit}"),
-            (Some(quantity), None) => quantity,
-            (None, unit) => unit.clone().unwrap_or_default(),
+        if let Some(display) = &self.display {
+            return display.clone();
+        }
+        format_value(&self.quantity, self.unit.as_deref())
+    }
+}
+
+fn format_value(value: &Value, unit: Option<&str>) -> String {
+    match (value.format(), unit) {
+        (Some(quantity), Some(unit)) => format!("{quantity} {unit}"),
+        (Some(quantity), None) => quantity,
+        (None, unit) => unit.unwrap_or_default().to_string(),
+    }
+}
+
+impl Amount {
+    /// The amount of a parsed quantity, with its written form (see
+    /// [`cooklang::quantity::Quantity::written`]).
+    pub(crate) fn new(quantity: &CoreQuantity, converter: &cooklang::Converter, liquid: bool) -> Self {
+        let exact = Amount::from(quantity);
+        let Some(written) = quantity.written(converter, liquid) else {
+            // Shown as fitted: the fraction as written, or a decimal if none fits. Known
+            // units use their symbol (`3 fl oz`, not `3 fluid ounce`); counts like
+            // `cloves` keep the recipe's wording, which follows the amount.
+            let unit = quantity
+                .unit_info(converter)
+                .filter(|u| u.physical_quantity != cooklang::convert::PhysicalQuantity::Count)
+                .map(|u| u.symbol().to_string())
+                .or_else(|| exact.unit.clone());
+            let display = format_value(&written_value(quantity.value()), unit.as_deref());
+            return Amount { display: Some(display), ..exact };
+        };
+        let parts: Vec<AmountPart> = written
+            .parts
+            .iter()
+            .map(|part| AmountPart {
+                value: part.value,
+                unit: part.unit.symbol().to_string(),
+                text: match part.name {
+                    Some(name) => name.to_string(),
+                    None => format!("{} {}", format_number(part.value), part.unit.symbol()),
+                },
+            })
+            .collect();
+        let display = parts.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join(written.separator);
+        let named = written.parts.iter().any(|p| p.name.is_some());
+        Amount {
+            parts: if parts.len() > 1 || named { parts } else { Vec::new() },
+            display: Some(display),
+            ..exact
         }
     }
 }
@@ -31,6 +97,8 @@ impl From<&CoreQuantity> for Amount {
         Amount {
             quantity: quantity.value().into(),
             unit: quantity.unit().map(|u| u.to_string()),
+            parts: Vec::new(),
+            display: None,
         }
     }
 }
@@ -71,6 +139,7 @@ impl Value {
     }
 }
 
+/// The exact value, including any error from fitting it to a fraction.
 impl From<&CoreValue> for Value {
     fn from(value: &CoreValue) -> Self {
         match value {
@@ -82,6 +151,31 @@ impl From<&CoreValue> for Value {
             CoreValue::Text(t) => Value::Text {
                 value: t.to_string(),
             },
+        }
+    }
+}
+
+/// The value as written: fractions without their fitting error.
+fn written_value(value: &CoreValue) -> Value {
+    match value {
+        CoreValue::Number(n) => Value::Number { value: written(*n) },
+        CoreValue::Range { start, end } => Value::Range {
+            start: written(*start),
+            end: written(*end),
+        },
+        CoreValue::Text(t) => Value::Text {
+            value: t.to_string(),
+        },
+    }
+}
+
+/// The number as written: a fraction that unit fitting rounded, like `2 7/8` for
+/// 2.8125 lb, without the rounding error, so it formats as the fraction.
+fn written(number: cooklang::quantity::Number) -> f64 {
+    match number {
+        cooklang::quantity::Number::Regular(value) => value,
+        cooklang::quantity::Number::Fraction { whole, num, den, .. } => {
+            whole as f64 + num as f64 / den as f64
         }
     }
 }
@@ -127,6 +221,8 @@ pub fn combine_ingredients(ingredients: Vec<Ingredient>) -> Vec<CombinedIngredie
         let amount = ingredient.amount.unwrap_or(Amount {
             quantity: Value::Empty,
             unit: None,
+            parts: Vec::new(),
+            display: None,
         });
         combiner.add(ingredient.name, std::iter::once(amount));
     }
@@ -168,6 +264,9 @@ fn merge_amount(amounts: &mut Vec<Amount>, amount: Amount) {
         amounts.push(amount);
         return;
     };
+    // The total is a new amount, so the old written form no longer applies.
+    existing.parts.clear();
+    existing.display = None;
     match (&mut existing.quantity, amount.quantity) {
         (Value::Number { value: total }, Value::Number { value }) => *total += value,
         (Value::Range { start: s, end: e }, Value::Range { start, end }) => {
@@ -199,8 +298,9 @@ fn format_number(value: f64) -> String {
 
 fn decimal_to_fraction(value: f64) -> Option<String> {
     const EPSILON: f64 = 0.0001;
-    const FRACTIONS: [(f64, &str); 9] = [
+    const FRACTIONS: [(f64, &str); 11] = [
         (0.125, "1/8"),
+        (1.0 / 6.0, "1/6"),
         (0.25, "1/4"),
         (1.0 / 3.0, "1/3"),
         (0.375, "3/8"),
@@ -208,6 +308,7 @@ fn decimal_to_fraction(value: f64) -> Option<String> {
         (0.625, "5/8"),
         (2.0 / 3.0, "2/3"),
         (0.75, "3/4"),
+        (5.0 / 6.0, "5/6"),
         (0.875, "7/8"),
     ];
     let whole = value.floor();
@@ -251,6 +352,8 @@ mod tests {
         Amount {
             quantity: Value::Number { value },
             unit: unit.map(str::to_string),
+            parts: Vec::new(),
+            display: None,
         }
     }
 
@@ -268,6 +371,40 @@ mod tests {
         );
         assert_eq!(Value::Number { value: 1.234 }.format().unwrap(), "1.234");
         assert_eq!(Value::Empty.format(), None);
+    }
+
+    #[test]
+    fn keeps_the_exact_amount_and_writes_it_for_a_cook() {
+        let converter = cooklang::Converter::bundled();
+        let amount = |value: f64, unit: &str| {
+            Amount::new(&CoreQuantity::new(CoreValue::from(value), Some(unit.into())), &converter, false)
+        };
+        let salt = amount(3.0 / 16.0, "tsp");
+        assert_eq!(salt.format(), "1/8 tsp");
+        assert_eq!(salt.quantity, Value::Number { value: 3.0 / 16.0 });
+
+        let beef = amount(45.0, "oz");
+        assert_eq!(beef.format(), "2 lb 13 oz");
+        assert_eq!(beef.quantity, Value::Number { value: 45.0 });
+        assert_eq!(beef.parts.len(), 2);
+        assert_eq!(beef.parts[1].text, "13 oz");
+
+        let oil = amount(2.25, "tbsp");
+        assert_eq!(oil.format(), "2 tbsp + 3/4 tsp");
+        assert_eq!(amount(1.0 / 16.0, "tsp").parts[0].text, "a pinch");
+        assert_eq!(amount(1.0 / 6.0, "c").format(), "1/6 c");
+        assert!(amount(1.5, "tbsp").parts.is_empty());
+        assert_eq!(amount(3.0, "fluid ounce").format(), "3 fl oz");
+    }
+
+    #[test]
+    fn totals_drop_the_written_form() {
+        let mut combiner = Combiner::default();
+        let written = Amount { display: Some("1/8 tsp".into()), ..number(3.0 / 16.0, Some("tsp")) };
+        combiner.add("salt".into(), [written.clone(), written]);
+        let total = &combiner.finish()[0].amounts[0];
+        assert_eq!(total.quantity, Value::Number { value: 3.0 / 8.0 });
+        assert_eq!(total.format(), "3/8 tsp");
     }
 
     #[test]

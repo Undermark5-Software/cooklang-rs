@@ -311,8 +311,10 @@ name = "cooklang-kmp"
 version = "0.19.0"
 dependencies = [
  "cooklang",
+ "serde",
  "serde_yaml",
  "thiserror",
+ "toml",
  "uniffi",
 ]
 

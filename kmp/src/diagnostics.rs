@@ -17,6 +17,9 @@ pub enum CooklangError {
         reason: String,
         diagnostics: Vec<Diagnostic>,
     },
+    /// The parser's config is invalid, like a unit override that doesn't parse.
+    #[error("{reason}")]
+    Config { reason: String },
 }
 
 impl CooklangError {

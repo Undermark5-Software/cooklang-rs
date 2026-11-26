@@ -120,6 +120,29 @@ mod tests {
     }
 
     #[test]
+    fn alternative_amounts() {
+        let input = "Add @plain flour{125%g}{1/2%cup}(sifted) and @salt{1%tsp}.";
+        let written = |recipe: &Recipe| -> Vec<Vec<String>> {
+            let amounts = |i: &Ingredient| i.alternative_amounts.iter().map(|a| a.format()).collect();
+            recipe.ingredients.iter().map(amounts).collect()
+        };
+
+        let recipe = parse_recipe(input.into(), 1.0).unwrap();
+        assert!(recipe.warnings.is_empty(), "{:?}", recipe.warnings);
+        assert_eq!(recipe.ingredients[0].amount.as_ref().unwrap().format(), "125 g");
+        assert_eq!(recipe.ingredients[0].note.as_deref(), Some("sifted"));
+        assert_eq!(written(&recipe), [vec!["1/2 cup".to_string()], vec![]]);
+
+        // Alternatives scale with the main amount, and are written the same way
+        // a main amount in their unit is.
+        let recipe = parse_recipe(input.into(), 2.0).unwrap();
+        assert_eq!(recipe.ingredients[0].amount.as_ref().unwrap().format(), "250 g");
+        let main = parse_recipe("Add @flour{1/2%cup}.".into(), 2.0).unwrap();
+        let main = main.ingredients[0].amount.as_ref().unwrap().format();
+        assert_eq!(written(&recipe), [vec![main], vec![]]);
+    }
+
+    #[test]
     fn recipe_reference_path() {
         let recipe = parse_recipe("Add @./sauces/pesto{1%cup}.".into(), 1.0).unwrap();
         let reference = recipe.ingredients[0].reference.clone().unwrap();

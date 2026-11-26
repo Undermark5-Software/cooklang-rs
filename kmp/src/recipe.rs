@@ -78,6 +78,9 @@ pub struct Ingredient {
     /// `alias` if there is one, otherwise `name`.
     pub display_name: String,
     pub amount: Option<Amount>,
+    /// The same amount in other measures, as the author wrote them after the
+    /// first: `1/2 cup` in `@flour{125%g}{1/2%cup}`. Empty without `amount`.
+    pub alternative_amounts: Vec<Amount>,
     /// Text in parentheses after the ingredient, e.g. `@onion{1}(diced)`.
     pub note: Option<String>,
     /// Set if this ingredient is another recipe, e.g. `@./sauces/pesto{}`.
@@ -314,6 +317,11 @@ fn ingredient(
         alias: ingredient.alias.clone(),
         display_name: ingredient.display_name().into_owned(),
         amount: ingredient.quantity.as_ref().map(|q| amount(q, liquid)),
+        alternative_amounts: ingredient
+            .alternative_quantities
+            .iter()
+            .map(|q| amount(q, liquid))
+            .collect(),
         note: ingredient.note.clone(),
         reference: ingredient.reference.as_ref().map(|r| RecipeReference {
             name: r.name.clone(),

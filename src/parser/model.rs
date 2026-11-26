@@ -66,6 +66,9 @@ pub struct Ingredient<'a> {
     pub name: Text<'a>,
     pub alias: Option<Text<'a>>,
     pub quantity: Option<Located<Quantity<'a>>>,
+    /// More measures of the same amount, in the braces after the first:
+    /// `@flour{125%g}{1/2%cup}`.
+    pub alternative_quantities: Vec<Located<Quantity<'a>>>,
     pub note: Option<Text<'a>>,
 }
 

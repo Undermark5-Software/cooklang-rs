@@ -580,6 +580,7 @@ impl<'i> RecipeCollector<'i, '_> {
             name: name.into_owned(),
             alias: ingredient.alias.map(|t| t.text_trimmed().into_owned()),
             quantity: ingredient.quantity.clone().map(|q| self.quantity(q, true)),
+            alternative_quantities: Vec::new(),
             note: ingredient.note.map(|n| n.text_trimmed().into_owned()),
             reference,
             modifiers: ingredient.modifiers.into_inner(),
@@ -588,6 +589,10 @@ impl<'i> RecipeCollector<'i, '_> {
                 self.define_mode != DefineMode::Components,
             ),
         };
+        new_igr.alternative_quantities = self.alternative_quantities(
+            new_igr.quantity.as_ref().zip(ingredient.quantity.as_ref()),
+            ingredient.alternative_quantities,
+        );
 
         if let Some(inter_data) = ingredient.intermediate_data {
             assert!(new_igr.modifiers().contains(Modifiers::REF));
@@ -1034,6 +1039,77 @@ impl<'i> RecipeCollector<'i, '_> {
 
         self.content.timers.push(new_timer);
         self.content.timers.len() - 1
+    }
+
+    /// Reads an ingredient's alternative quantities, warning about one that
+    /// scales differently from the main quantity or repeats a unit.
+    fn alternative_quantities(
+        &mut self,
+        main: Option<(&Quantity, &Located<parser::Quantity<'i>>)>,
+        alternatives: Vec<Located<parser::Quantity<'i>>>,
+    ) -> Vec<Quantity> {
+        let Some((main, main_loc)) = main else {
+            // the parser drops alternatives without a main quantity
+            return Vec::new();
+        };
+
+        let unit_span =
+            |q: &Located<parser::Quantity>| q.unit.as_ref().map(|u| u.span()).unwrap_or(q.span());
+        let mut seen: Vec<(&str, Span)> = Vec::new();
+        if let Some(unit) = main.unit() {
+            seen.push((unit, unit_span(main_loc)));
+        }
+
+        let mut quantities = Vec::with_capacity(alternatives.len());
+        let mut owned_units = Vec::with_capacity(alternatives.len());
+        for located in alternatives {
+            let span = located.span();
+            let this_unit_span = unit_span(&located);
+            let q = self.quantity(located, true);
+
+            let numeric = !main.value().is_text() && !q.value().is_text();
+            if numeric && q.scalable != main.scalable {
+                let (locked, scales) = if q.scalable {
+                    (main_loc.span(), span)
+                } else {
+                    (span, main_loc.span())
+                };
+                self.ctx.warn(
+                    warning!(
+                        "Alternative quantity scales differently from the main quantity",
+                        label!(locked, "this one won't scale")
+                    )
+                    .label(label!(scales, "this one scales"))
+                    .hint("Lock both with `=`, or neither"),
+                );
+            }
+
+            owned_units.push((q.unit().map(str::to_owned), this_unit_span));
+            quantities.push(q);
+        }
+
+        for (unit, span) in &owned_units {
+            let Some(unit) = unit.as_deref() else {
+                continue;
+            };
+            let repeated = seen
+                .iter()
+                .find(|(other, _)| same_unit(unit, other, self.converter));
+            if let Some((_, first)) = repeated {
+                self.ctx.warn(
+                    warning!(
+                        "Alternative quantity repeats a unit",
+                        label!(*span, "this unit")
+                    )
+                    .label(label!(*first, "is already used here"))
+                    .hint("Each measure of an ingredient should use a different unit"),
+                );
+            } else {
+                seen.push((unit, *span));
+            }
+        }
+
+        quantities
     }
 
     fn quantity(
@@ -1652,6 +1728,15 @@ fn number(s: &str) -> Option<f64> {
     match s.split_once(char::is_whitespace) {
         Some((whole, frac)) => Some(whole.parse::<f64>().ok()? + fraction(frac)?),
         None => fraction(s),
+    }
+}
+
+/// Whether two unit spellings name the same unit, like `g` and `grams`. Units
+/// the converter doesn't know only match when written the same way.
+fn same_unit(a: &str, b: &str, converter: &Converter) -> bool {
+    match (converter.find_unit(a), converter.find_unit(b)) {
+        (Some(a), Some(b)) => std::sync::Arc::ptr_eq(&a, &b),
+        _ => a == b,
     }
 }
 

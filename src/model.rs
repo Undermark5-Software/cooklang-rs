@@ -181,6 +181,15 @@ pub struct Ingredient {
     pub alias: Option<String>,
     /// Quantity
     pub quantity: Option<Quantity>,
+    /// More measures of the same amount, as the author wrote them after
+    /// [`Self::quantity`]: `@flour{125%g}{1/2%cup}`. Empty unless the
+    /// [`ALTERNATIVE_QUANTITIES`](crate::Extensions::ALTERNATIVE_QUANTITIES)
+    /// extension is enabled, and always empty without a quantity.
+    ///
+    /// They scale and convert with the recipe, but totals such as
+    /// [`Self::group_quantities`] only add up the main quantities.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternative_quantities: Vec<Quantity>,
     /// Note
     pub note: Option<String>,
     /// Recipe reference

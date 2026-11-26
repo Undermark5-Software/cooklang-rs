@@ -146,6 +146,31 @@ comunicating that in some cases.
 ## Timer requires time
 Just an extra rule that makes timers like `~name` invalid.
 
+## Alternative quantities
+An ingredient can list the same amount in more than one measure. Each one goes
+in its own braces, right after the first, with no space between them:
+
+```cooklang
+@plain flour{125%g}{1/2%cup}(sifted)
+@butter{1%stick}{8%tbsp}{113%g}
+@milk{2-3%cups}{500 ml}
+```
+
+The first braces hold the main quantity, and the others are kept in
+`alternative_quantities` as written. The parser doesn't check that they agree;
+that's up to the author. They scale and convert with the recipe, but totals
+only add up the main quantities.
+
+- An alternative without a main quantity (`@salt{}{1%pinch}`) is ignored with a
+  warning, and so are empty braces.
+- A unit repeated among an ingredient's measures warns, as does an alternative
+  that scales differently from the main quantity (`@salt{=1%tsp}{5%g}`).
+- Cookware and timers can't have alternatives: their extra braces stay text,
+  with a warning.
+
+This extension isn't part of `COMPAT`. Parsers without it leave the extra
+braces in the step text.
+
 [^1]: This is work in progress in `cooklang` but supported here.
 
 [^2]: Currently this is done in the analysis pass. So in the AST there is no

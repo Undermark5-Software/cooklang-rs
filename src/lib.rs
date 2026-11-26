@@ -137,6 +137,12 @@ bitflags! {
         /// `~{30-40%min}`, `~{1-3 seconds}`, `~{90 s}`. Compound durations, like
         /// `~{1h20m}`, `~{1 hour 20 min}` or `~{1h20m-1h25m}`, become minutes.
         const TIMER_DURATIONS          = 1 << 12;
+        /// Give an ingredient more measures of the same amount, each in its own
+        /// braces right after the first: `@flour{125%g}{1/2%cup}`. The first is the
+        /// main quantity; the others are kept as written in
+        /// [`Ingredient::alternative_quantities`](crate::model::Ingredient::alternative_quantities)
+        /// and scale and convert with it. Whether they agree is up to the author.
+        const ALTERNATIVE_QUANTITIES   = 1 << 13;
 
         /// Enables a subset of extensions to maximize compatibility with other
         /// cooklang parsers.

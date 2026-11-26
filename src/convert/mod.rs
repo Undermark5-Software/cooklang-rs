@@ -531,7 +531,7 @@ impl Recipe {
         };
 
         for igr in &mut self.ingredients {
-            if let Some(q) = &mut igr.quantity {
+            for q in igr.quantity.iter_mut().chain(&mut igr.alternative_quantities) {
                 conv(q);
             }
         }

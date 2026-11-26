@@ -54,7 +54,7 @@ impl Recipe {
 
         self.ingredients
             .iter_mut()
-            .filter_map(|i| i.quantity.as_mut())
+            .flat_map(|i| i.quantity.iter_mut().chain(&mut i.alternative_quantities))
             .for_each(scale_quantity);
         self.cookware
             .iter_mut()

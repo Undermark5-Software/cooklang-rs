@@ -87,6 +87,99 @@ fn comp_body<'t>(bp: &mut BlockParser<'t, '_>) -> Option<Body<'t>> {
     })
 }
 
+/// Braces right after a component's quantity: `{1/2%cup}` in `@flour{125%g}{1/2%cup}`.
+struct ExtraBraces<'t> {
+    span: Span,
+    quantity: Option<&'t [Token]>,
+}
+
+/// Consumes every `{...}` that directly follows the previous closing brace.
+/// An unclosed brace stops the search and stays text.
+fn extra_braces<'t>(bp: &mut BlockParser<'t, '_>) -> Vec<ExtraBraces<'t>> {
+    let mut found = Vec::new();
+    while bp.at(T!['{']) {
+        let braces = bp.with_recover(|bp| {
+            let start = bp.consume(T!['{'])?.span.start();
+            let quantity = bp.until(|t| t == T!['}'])?;
+            let end = bp.bump(T!['}']).span.end();
+            let not_empty = quantity
+                .iter()
+                .any(|t| !matches!(t.kind, T![ws] | T![block comment]));
+            Some(ExtraBraces {
+                span: Span::new(start, end),
+                quantity: not_empty.then_some(quantity),
+            })
+        });
+        match braces {
+            Some(braces) => found.push(braces),
+            None => break,
+        }
+    }
+    found
+}
+
+/// Parses the braces after an ingredient's quantity as its alternative
+/// quantities, for [`Extensions::ALTERNATIVE_QUANTITIES`].
+fn alternative_quantities<'i>(
+    bp: &mut BlockParser<'_, 'i>,
+    braces: Vec<ExtraBraces<'_>>,
+    has_quantity: bool,
+) -> Vec<Located<Quantity<'i>>> {
+    let Some(first) = braces.first() else {
+        return Vec::new();
+    };
+    if !has_quantity {
+        let last = braces.last().unwrap_or(first);
+        bp.warn(
+            warning!(
+                "Alternative quantities need a main quantity, they will be ignored",
+                label!(Span::new(first.span.start(), last.span.end())),
+            )
+            .hint("Write the main quantity in the first braces, like `@flour{125%g}{1/2%cup}`"),
+        );
+        return Vec::new();
+    }
+
+    let mut quantities = Vec::with_capacity(braces.len());
+    for ExtraBraces { span, quantity } in braces {
+        match quantity {
+            Some(tokens) => quantities.push(parse_quantity(bp, tokens).quantity),
+            None => bp.warn(warning!(
+                "Empty alternative quantity, it will be ignored",
+                label!(span, "remove this"),
+            )),
+        }
+    }
+    quantities
+}
+
+/// Warns about braces after a cookware item's or timer's quantity, which
+/// stay text: only ingredients have alternative quantities.
+fn check_alternative_quantities(bp: &mut BlockParser, container: &'static str) {
+    assert_ne!(container, INGREDIENT);
+    if !bp.extension(Extensions::ALTERNATIVE_QUANTITIES) || !bp.at(T!['{']) {
+        return;
+    }
+
+    assert!(bp
+        .with_recover(|bp| {
+            let braces = extra_braces(bp);
+            if let (Some(first), Some(last)) = (braces.first(), braces.last()) {
+                bp.warn(
+                    warning!(
+                        format!(
+                            "A {container} cannot have alternative quantities, they will be text"
+                        ),
+                        label!(Span::new(first.span.start(), last.span.end())),
+                    )
+                    .hint("Alternative quantities are only available in ingredients"),
+                );
+            }
+            None::<()> // always backtrack
+        })
+        .is_none());
+}
+
 /// Consumes the modifier tokens after a component sigil.
 ///
 /// The optional marker `?` is part of the core syntax for ingredients and
@@ -348,6 +441,11 @@ fn ingredient<'i>(bp: &mut BlockParser<'_, 'i>) -> Option<Event<'i>> {
     let modifiers_tokens = modifiers(bp, true);
     let name_offset = bp.current_offset();
     let body = comp_body(bp)?;
+    let extra = if body.close.is_some() && bp.extension(Extensions::ALTERNATIVE_QUANTITIES) {
+        extra_braces(bp)
+    } else {
+        Vec::new()
+    };
     let note = note(bp);
     let end = bp.current_offset();
 
@@ -363,6 +461,7 @@ fn ingredient<'i>(bp: &mut BlockParser<'_, 'i>) -> Option<Event<'i>> {
     let quantity = body
         .quantity
         .map(|tokens| parse_quantity(bp, tokens).quantity);
+    let alternative_quantities = alternative_quantities(bp, extra, quantity.is_some());
 
     Some(Event::Ingredient(Located::new(
         Ingredient {
@@ -371,6 +470,7 @@ fn ingredient<'i>(bp: &mut BlockParser<'_, 'i>) -> Option<Event<'i>> {
             name,
             alias,
             quantity,
+            alternative_quantities,
             note,
         },
         start..end,
@@ -385,6 +485,9 @@ fn cookware<'i>(bp: &mut BlockParser<'_, 'i>) -> Option<Event<'i>> {
     let modifiers_tokens = modifiers(bp, true);
     let name_offset = bp.current_offset();
     let body = comp_body(bp)?;
+    if body.close.is_some() {
+        check_alternative_quantities(bp, COOKWARE);
+    }
     let note = note(bp);
     let end = bp.current_offset();
 
@@ -435,6 +538,9 @@ fn timer<'i>(bp: &mut BlockParser<'_, 'i>) -> Option<Event<'i>> {
     let end = bp.current_offset();
 
     // Errors
+    if body.close.is_some() {
+        check_alternative_quantities(bp, TIMER);
+    }
     check_modifiers(bp, modifiers_tokens, TIMER);
     check_alias(bp, body.name, TIMER);
     check_note(bp, TIMER);

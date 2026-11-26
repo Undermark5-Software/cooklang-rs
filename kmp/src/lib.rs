@@ -202,7 +202,7 @@ mod tests {
             .iter()
             .map(|i| i.amount.as_ref().unwrap().format())
             .collect();
-        assert_eq!(amounts, ["2 - 4 tsp", "1/8 c"]);
+        assert_eq!(amounts, ["2 - 4 tsp", "2 tbsp"]);
     }
 
     #[test]

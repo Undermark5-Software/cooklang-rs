@@ -626,23 +626,28 @@ impl Quantity {
     /// How a cook would write this amount, in US units, without changing it.
     ///
     /// - Volume: one cup, tablespoon or teaspoon amount if one writes it exactly; otherwise
-    ///   two parts, with the fewest parts winning and ties going to tablespoons +
-    ///   teaspoons under 1/4 cup and to a cup fraction + the rest from 1/4 cup up
-    ///   (`2 tbsp + 3/4 tsp`, `1 c + 1 tbsp`). Teaspoon sixteenths drop to the eighth
-    ///   below, the only rounding; 1/16 and 1/32 tsp are named `a pinch` and `a smidgen`.
+    ///   two parts: tablespoons + teaspoons up to 7 tablespoons, a cup fraction + a
+    ///   spoon amount above (`2 tbsp + 3/4 tsp`, `1 c + 1 tbsp`). Eighths of a cup up to
+    ///   7 tablespoons are written in tablespoons (3/8 c is `6 tbsp`). Teaspoon sixteenths
+    ///   drop to the eighth below; 1/16 and 1/32 tsp are named `a pinch` and `a smidgen`.
+    ///   An amount no two parts write is a decimal, to two places, in the unit for its
+    ///   size (`0.56 c`).
     /// - Weight: pounds when a pound fraction writes it, ounces under a pound, otherwise
     ///   whole pounds and ounces (`2 lb 13 oz`).
     ///
     /// Each unit's fraction settings (`denominators`, `min`, `max_whole`) decide what is
-    /// allowed. Returns `None` for ranges, text, metric and other quantities, and for
-    /// amounts no combination writes exactly; show those as they are.
+    /// allowed. Returns `None` for text, metric and other quantities, and for ranges no
+    /// single unit writes exactly; show those as they are.
     ///
-    /// For a `liquid` (broth, milk, water…), quarts join the volume ladder from 1 quart up
+    /// For a `liquid` (broth, milk, water…), gallons join the volume ladder from 1 gallon
+    /// in quarter gallons (24 cups → `1 1/2 gal`), then quarts from 1 quart up
     /// (8 cups → `2 qt`). An amount the recipe wrote in quarts or pints keeps that unit
     /// while it is at least 1 of it (3 qt × 4 → `12 qt`) and uses cups below.
     pub fn written(&self, converter: &Converter, liquid: bool) -> Option<WrittenAmount> {
-        let Value::Number(number) = self.value() else {
-            return None;
+        let (number, range_end) = match self.value() {
+            Value::Number(n) => (*n, None),
+            Value::Range { start, end } => (*start, Some(end.value())),
+            Value::Text(_) => return None,
         };
         let unit = self.unit_info(converter)?;
         if unit.system != Some(System::Imperial) {
@@ -657,6 +662,14 @@ impl Quantity {
         units.sort_by(|a, b| b.ratio.partial_cmp(&a.ratio).unwrap_or(std::cmp::Ordering::Equal));
         let total = number.value() * unit.ratio;
         let in_ladder = units.iter().any(|u| u.symbol() == unit.symbol());
+        if let Some(end) = range_end {
+            return match unit.physical_quantity {
+                PhysicalQuantity::Volume if in_ladder => {
+                    written_volume_range(total, end * unit.ratio, &units, converter)
+                }
+                _ => None,
+            };
+        }
         match unit.physical_quantity {
             PhysicalQuantity::Volume => {
                 let largest = units.first()?;
@@ -672,6 +685,17 @@ impl Quantity {
                             n >= 0.999 && (n - n.round()).abs() <= n * SAME
                         })
                         .map(|_| one(WrittenPart::new(cups, largest)));
+                }
+                // Liquids go up to gallons from 1 gallon, in whole or quarter gallons.
+                if liquid {
+                    if let Some(gallon) = converter.find_unit_in("gal", PhysicalQuantity::Volume) {
+                        let quarters = total / gallon.ratio * 4.0;
+                        if quarters >= 4.0 * (1.0 - SAME)
+                            && (quarters - quarters.round()).abs() <= quarters * SAME
+                        {
+                            return Some(one(WrittenPart::new(quarters.round() / 4.0, &gallon)));
+                        }
+                    }
                 }
                 // The recipe's own pints or quarts, while there is at least one.
                 if !in_ladder && number.value() >= 1.0 - SAME {
@@ -1100,14 +1124,18 @@ pub struct WrittenAmount {
 pub struct WrittenPart {
     /// The amount as written, a whole number or an allowed fraction.
     pub value: f64,
+    /// For a range, its end; `value` is the start.
+    pub end: Option<f64>,
     pub unit: Arc<Unit>,
     /// A name to show instead, like `a pinch`.
     pub name: Option<&'static str>,
+    /// Whether `value` is a rounded decimal, shown as a decimal and never as a fraction.
+    pub decimal: bool,
 }
 
 impl WrittenPart {
     fn new(value: f64, unit: &Arc<Unit>) -> Self {
-        Self { value, unit: Arc::clone(unit), name: None }
+        Self { value, end: None, unit: Arc::clone(unit), name: None, decimal: false }
     }
 }
 
@@ -1120,9 +1148,16 @@ impl std::fmt::Display for WrittenAmount {
             match part.name {
                 Some(name) => f.write_str(name)?,
                 None => {
-                    let value = Number::new_approx(part.value, 0.001, 16, u32::MAX)
-                        .unwrap_or(Number::Regular(part.value));
-                    write!(f, "{} {}", value, part.unit.symbol())?;
+                    let number = |v: f64| {
+                        if part.decimal {
+                            return Number::Regular(v);
+                        }
+                        Number::new_approx(v, 0.001, 16, u32::MAX).unwrap_or(Number::Regular(v))
+                    };
+                    match part.end {
+                        Some(end) => write!(f, "{}-{} {}", number(part.value), number(end), part.unit.symbol())?,
+                        None => write!(f, "{} {}", number(part.value), part.unit.symbol())?,
+                    }
                 }
             }
         }
@@ -1165,11 +1200,10 @@ fn written_volume(total: f64, units: &[Arc<Unit>], converter: &Converter) -> Opt
         total
     };
 
-    for unit in [cup, tbsp, tsp] {
-        if let Some(part) = exactly_in(total, unit, converter) {
-            return Some(one(part));
-        }
-    }
+    // The unit follows the size: teaspoons below a tablespoon, tablespoons below a
+    // quarter cup, cups from there. So scaling up never moves an amount to a smaller
+    // unit; what a unit can't write exactly goes into a smaller one as a second part.
+    let band = volume_band(total, cup, tbsp);
 
     // A teaspoon amount inside a split: thirds are only for a teaspoon amount on its
     // own (1 1/3 tsp), never next to another unit.
@@ -1180,11 +1214,8 @@ fn written_volume(total: f64, units: &[Arc<Unit>], converter: &Converter) -> Opt
                 || (thirds - thirds.round()).abs() > 1e-6
         })
     };
-    // The rest of a split: one spoon amount, or whole tablespoons + teaspoons.
-    let spoons = |rest: f64| -> Option<Vec<WrittenPart>> {
-        if let Some(part) = exactly_in(rest, tbsp, converter).or_else(|| tsp_in_split(rest)) {
-            return Some(vec![part]);
-        }
+    // Whole tablespoons + teaspoons: 2 1/4 tbsp is 2 tbsp + 3/4 tsp.
+    let tbsp_and_tsp = |rest: f64| -> Option<Vec<WrittenPart>> {
         let whole = ((rest / tbsp.ratio) * (1.0 + SAME)).floor();
         if whole < 1.0 {
             return None;
@@ -1192,40 +1223,130 @@ fn written_volume(total: f64, units: &[Arc<Unit>], converter: &Converter) -> Opt
         let tsp_part = tsp_in_split(rest - whole * tbsp.ratio)?;
         Some(vec![WrittenPart::new(whole, tbsp), tsp_part])
     };
-    let quarter_cup = cup.ratio / 4.0;
-    let prefer_cups = total >= quarter_cup * (1.0 - SAME);
-    // (parts, tie-break, larger cup first)
-    let mut best: Option<((usize, bool, f64), Vec<WrittenPart>)> = None;
-    let mut consider = |parts: Vec<WrittenPart>, has_cup: bool, cup_amount: f64| {
-        let key = (parts.len(), has_cup != prefer_cups, -cup_amount);
-        if best.as_ref().is_none_or(|(k, _)| key < *k) {
-            best = Some((key, parts));
+
+    let decimal = |unit: &Arc<Unit>| {
+        let value = ((total / unit.ratio) * 100.0).round() / 100.0;
+        one(WrittenPart { decimal: true, ..WrittenPart::new(value, unit) })
+    };
+    let written = match band {
+        VolumeBand::Teaspoons => exactly_in(total, tsp, converter).map(one),
+        VolumeBand::Tablespoons => exactly_in(total, tbsp, converter)
+            .map(one)
+            .or_else(|| tbsp_and_tsp(total).map(|parts| WrittenAmount { parts, separator: " + " }))
+            // Teaspoon thirds can't sit next to tablespoons, so 3 1/3 tsp stays teaspoons.
+            .or_else(|| exactly_in(total, tsp, converter).map(one)),
+        VolumeBand::Cups => {
+            let in_tbsp = total <= MAX_TBSP * tbsp.ratio * (1.0 + SAME);
+            if let Some(part) = exactly_in(total, cup, converter) {
+                if !(in_tbsp && is_cup_eighth(part.value)) {
+                    return Some(one(part));
+                }
+            }
+            if in_tbsp {
+                if let Some(written) = exactly_in(total, tbsp, converter)
+                    .map(one)
+                    .or_else(|| tbsp_and_tsp(total).map(|parts| WrittenAmount { parts, separator: " + " }))
+                {
+                    return Some(written);
+                }
+            }
+            // A cup fraction and one spoon amount, with the most in cups.
+            let spoon = |rest: f64| exactly_in(rest, tbsp, converter).or_else(|| tsp_in_split(rest));
+            cup_amounts_below(total / cup.ratio, converter.fractions_config(cup))
+                .into_iter()
+                .filter_map(|amount| Some((amount, spoon(total - amount * cup.ratio)?)))
+                .max_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(amount, rest)| WrittenAmount {
+                    parts: vec![WrittenPart::new(amount, cup), rest],
+                    separator: " + ",
+                })
         }
     };
-    if let Some(parts) = spoons(total) {
-        consider(parts, false, 0.0);
+    written.or_else(|| {
+        Some(decimal(match band {
+            VolumeBand::Teaspoons => tsp,
+            VolumeBand::Tablespoons => tbsp,
+            VolumeBand::Cups => cup,
+        }))
+    })
+}
+
+/// The most tablespoons written together; eighths of a cup up to this are tablespoons.
+const MAX_TBSP: f64 = 7.0;
+
+/// Whether a cup amount is in odd eighths, like 3/8 or 1 1/8.
+fn is_cup_eighth(cups: f64) -> bool {
+    let eighths = cups * 8.0;
+    (eighths - eighths.round()).abs() < 1e-6 && eighths.round() as u64 % 2 == 1
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum VolumeBand {
+    Teaspoons,
+    Tablespoons,
+    Cups,
+}
+
+/// Which unit a volume of `total` (base units) is written in, by its size.
+fn volume_band(total: f64, cup: &Unit, tbsp: &Unit) -> VolumeBand {
+    if total >= cup.ratio / 4.0 * (1.0 - SAME) {
+        VolumeBand::Cups
+    } else if total >= tbsp.ratio * (1.0 - SAME) {
+        VolumeBand::Tablespoons
+    } else {
+        VolumeBand::Teaspoons
     }
-    let cup_cfg = converter.fractions_config(cup);
-    let in_cups = total / cup.ratio;
-    for den in 1..=cup_cfg.max_denominator as u32 {
-        if !cup_cfg.denominators.is_none_or(|d| d.contains(den)) {
+}
+
+/// The cup amounts `cfg` allows that are less than `in_cups`.
+fn cup_amounts_below(in_cups: f64, cfg: FractionsConfig) -> Vec<f64> {
+    let mut amounts = Vec::new();
+    for den in 1..=cfg.max_denominator as u32 {
+        if !cfg.denominators.is_none_or(|d| d.contains(den)) {
             continue;
         }
         let mut num = 1;
         while (num as f64 / den as f64) < in_cups * (1.0 - SAME) {
             let amount = num as f64 / den as f64;
             num += 1;
-            if amount < cup_cfg.min - 1e-9 || amount.trunc() > cup_cfg.max_whole as f64 {
-                continue;
-            }
-            if let Some(rest) = spoons(total - amount * cup.ratio) {
-                let mut parts = vec![WrittenPart::new(amount, cup)];
-                parts.extend(rest);
-                consider(parts, true, amount);
+            if amount >= cfg.min - 1e-9 && amount.trunc() <= cfg.max_whole as f64 {
+                amounts.push(amount);
             }
         }
     }
-    best.map(|(_, parts)| WrittenAmount { parts, separator: " + " })
+    amounts
+}
+
+/// A volume range in one unit: the unit for the start's size, or a smaller one, as long
+/// as it writes both ends exactly (1-2 tbsp doubled is 2-4 tbsp, not 1/8-1/4 c).
+fn written_volume_range(
+    start: f64,
+    end: f64,
+    units: &[Arc<Unit>],
+    converter: &Converter,
+) -> Option<WrittenAmount> {
+    let [cup, tbsp, tsp] = units else {
+        return None;
+    };
+    let candidates: &[&Arc<Unit>] = match volume_band(start, cup, tbsp) {
+        VolumeBand::Cups => &[cup, tbsp, tsp],
+        VolumeBand::Tablespoons => &[tbsp, tsp],
+        VolumeBand::Teaspoons => &[tsp],
+    };
+    // Eighths of a cup up to 7 tablespoons are tablespoons: 4-6 tbsp, not 1/4-3/8 c.
+    let in_tbsp = end <= MAX_TBSP * tbsp.ratio * (1.0 + SAME);
+    let cup_eighths = |v: f64| is_cup_eighth(v / cup.ratio);
+    candidates.iter().find_map(|unit| {
+        if Arc::ptr_eq(unit, cup) && in_tbsp && (cup_eighths(start) || cup_eighths(end)) {
+            return None;
+        }
+        let from = exactly_in(start, unit, converter)?;
+        let to = exactly_in(end, unit, converter)?;
+        Some(WrittenAmount {
+            parts: vec![WrittenPart { end: Some(to.value), ..from }],
+            separator: " + ",
+        })
+    })
 }
 
 /// Weight: `units` are pound, ounce, largest first.

@@ -76,9 +76,15 @@ impl Amount {
             .map(|part| AmountPart {
                 value: part.value,
                 unit: part.unit.symbol().to_string(),
-                text: match part.name {
-                    Some(name) => name.to_string(),
-                    None => format!("{} {}", format_number(part.value), part.unit.symbol()),
+                text: match (part.name, part.end) {
+                    (Some(name), _) => name.to_string(),
+                    (None, Some(end)) => format!(
+                        "{} - {} {}",
+                        format_number(part.value),
+                        format_number(end),
+                        part.unit.symbol()
+                    ),
+                    (None, None) => format!("{} {}", format_number(part.value), part.unit.symbol()),
                 },
             })
             .collect();
@@ -392,7 +398,7 @@ mod tests {
         let oil = amount(2.25, "tbsp");
         assert_eq!(oil.format(), "2 tbsp + 3/4 tsp");
         assert_eq!(amount(1.0 / 16.0, "tsp").parts[0].text, "a pinch");
-        assert_eq!(amount(1.0 / 6.0, "c").format(), "1/6 c");
+        assert_eq!(amount(1.0 / 6.0, "c").format(), "2 tbsp + 2 tsp");
         assert!(amount(1.5, "tbsp").parts.is_empty());
         assert_eq!(amount(3.0, "fluid ounce").format(), "3 fl oz");
     }

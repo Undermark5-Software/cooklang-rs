@@ -204,16 +204,16 @@ mod tests {
 
     #[test]
     fn unit_overrides_apply_without_a_rebuild() {
-        let source = "Add @sugar{1/6%cup}.".to_string();
+        let source = "Add @sugar{5/6%cup}.".to_string();
         let default = RecipeParser::new(None).unwrap().parse(source.clone(), 1.0).unwrap();
-        assert_eq!(default.ingredients[0].amount.as_ref().unwrap().format(), "1/6 c");
+        assert_eq!(default.ingredients[0].amount.as_ref().unwrap().format(), "5/6 c");
         let config = r#"
             [units.fractions.unit]
             cup = { denominators = [2, 3, 4, 8] }
         "#;
         let parser = RecipeParser::new(Some(config.into())).unwrap();
         let recipe = parser.parse(source, 1.0).unwrap();
-        assert_eq!(recipe.ingredients[0].amount.as_ref().unwrap().format(), "2 tbsp + 2 tsp");
+        assert_eq!(recipe.ingredients[0].amount.as_ref().unwrap().format(), "3/4 c + 4 tsp");
     }
 
     #[test]

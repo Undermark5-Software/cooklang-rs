@@ -66,7 +66,11 @@ impl RecipeParser {
             .parse(&input)
             .into_result()
             .map_err(|report| CooklangError::from_report(&report, &input))?;
-        parsed.scale(scale, self.parser.converter());
+        // Unscaled, amounts stay as the recipe wrote them: no fitting, no written form.
+        let as_written = scale == 1.0;
+        if !as_written {
+            parsed.scale(scale, self.parser.converter());
+        }
         let metadata = metadata::convert(&parsed.metadata, self.parser.converter());
         let warnings = diagnostics::diagnostics(&report, &input);
         Ok(recipe::convert(
@@ -75,6 +79,7 @@ impl RecipeParser {
             &self.liquids,
             metadata,
             warnings,
+            as_written,
         ))
     }
 
@@ -186,9 +191,9 @@ mod tests {
 
     #[test]
     fn liquids_get_quarts_and_config_changes_the_rules() {
-        let source = "Add @chicken broth{8%cups} and @flour{8%cups}.".to_string();
+        let source = "Add @chicken broth{4%cups} and @flour{4%cups}.".to_string();
         let parser = RecipeParser::new(None).unwrap();
-        let recipe = parser.parse(source.clone(), 1.0).unwrap();
+        let recipe = parser.parse(source.clone(), 2.0).unwrap();
         let shown: Vec<_> = recipe.ingredients.iter().map(|i| i.amount.as_ref().unwrap().format()).collect();
         assert_eq!(shown, ["2 qt", "8 c"]);
 
@@ -197,23 +202,42 @@ mod tests {
             words = ["flour"]
         "#;
         let parser = RecipeParser::new(Some(config.into())).unwrap();
-        let recipe = parser.parse(source, 1.0).unwrap();
+        let recipe = parser.parse(source, 2.0).unwrap();
         let shown: Vec<_> = recipe.ingredients.iter().map(|i| i.amount.as_ref().unwrap().format()).collect();
         assert_eq!(shown, ["8 c", "2 qt"]);
     }
 
     #[test]
     fn unit_overrides_apply_without_a_rebuild() {
-        let source = "Add @sugar{5/6%cup}.".to_string();
-        let default = RecipeParser::new(None).unwrap().parse(source.clone(), 1.0).unwrap();
+        let source = "Add @sugar{5/12%cup}.".to_string();
+        let default = RecipeParser::new(None).unwrap().parse(source.clone(), 2.0).unwrap();
         assert_eq!(default.ingredients[0].amount.as_ref().unwrap().format(), "5/6 c");
         let config = r#"
             [units.fractions.unit]
             cup = { denominators = [2, 3, 4, 8] }
         "#;
         let parser = RecipeParser::new(Some(config.into())).unwrap();
-        let recipe = parser.parse(source, 1.0).unwrap();
+        let recipe = parser.parse(source, 2.0).unwrap();
         assert_eq!(recipe.ingredients[0].amount.as_ref().unwrap().format(), "3/4 c + 4 tsp");
+    }
+
+    #[test]
+    fn unscaled_amounts_are_shown_as_written() {
+        let source = "Add @chicken broth{8%cups}, @flour{1.5%cups}, @salt{3/16%tsp} and @oil{5%tbsp}. \
+            Later add @&salt{1/2%tsp}."
+            .to_string();
+        let parser = RecipeParser::new(None).unwrap();
+        let recipe = parser.parse(source.clone(), 1.0).unwrap();
+        let shown: Vec<_> = recipe.ingredients.iter().map(|i| i.amount.as_ref().unwrap().format()).collect();
+        assert_eq!(shown, ["8 cups", "1.5 cups", "3/16 tsp", "5 tbsp", "1/2 tsp"]);
+        assert_eq!(recipe.ingredients[1].amount.as_ref().unwrap().quantity, crate::quantity::Value::Number { value: 1.5 });
+        // A total over references isn't written in the recipe, so it gets the written form.
+        let listed: Vec<_> = recipe.ingredient_list.iter().map(|l| l.amounts[0].format()).collect();
+        assert_eq!(listed, ["8 cups", "1.5 cups", "5/8 tsp", "5 tbsp"]);
+
+        let doubled = parser.parse(source, 2.0).unwrap();
+        let shown: Vec<_> = doubled.ingredients.iter().map(|i| i.amount.as_ref().unwrap().format()).collect();
+        assert_eq!(shown, ["1 gal", "3 c", "3/8 tsp", "5/8 c", "1 tsp"]);
     }
 
     #[test]

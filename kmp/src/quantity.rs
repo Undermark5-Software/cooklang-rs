@@ -54,6 +54,17 @@ fn format_value(value: &Value, unit: Option<&str>) -> String {
 }
 
 impl Amount {
+    /// The amount exactly as the recipe wrote it, number and unit, like `1.5 cups` or
+    /// `3/16 tsp`: an unscaled recipe shows its own amounts.
+    pub(crate) fn as_parsed(quantity: &CoreQuantity) -> Self {
+        let exact = Amount::from(quantity);
+        let display = match (quantity.value(), quantity.unit()) {
+            (value, Some(unit)) => format!("{value} {unit}"),
+            (value, None) => value.to_string(),
+        };
+        Amount { display: Some(display), ..exact }
+    }
+
     /// The amount of a parsed quantity, with its written form (see
     /// [`cooklang::quantity::Quantity::written`]).
     pub(crate) fn new(quantity: &CoreQuantity, converter: &cooklang::Converter, liquid: bool) -> Self {

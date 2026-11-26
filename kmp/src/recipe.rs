@@ -178,7 +178,15 @@ pub(crate) fn convert(
     liquids: &crate::parser::Liquids,
     metadata: Metadata,
     warnings: Vec<Diagnostic>,
+    as_written: bool,
 ) -> Recipe {
+    let amount = |q: &cooklang::quantity::Quantity, liquid: bool| {
+        if as_written {
+            Amount::as_parsed(q)
+        } else {
+            Amount::new(q, converter, liquid)
+        }
+    };
     // The section each ingredient appears in, to place references to its steps.
     let mut ingredient_sections = vec![0; recipe.ingredients.len()];
     for (section_index, section) in recipe.sections.iter().enumerate() {
@@ -199,7 +207,7 @@ pub(crate) fn convert(
             .ingredients
             .iter()
             .zip(&ingredient_sections)
-            .map(|(i, section)| ingredient(i, *section, converter, liquids))
+            .map(|(i, section)| ingredient(i, *section, liquids, &amount))
             .collect(),
         ingredient_list: recipe
             .group_ingredients(converter)
@@ -207,15 +215,25 @@ pub(crate) fn convert(
             .filter(|grouped| grouped.ingredient.modifiers().should_be_listed())
             .map(|grouped| {
                 let liquid = is_liquid(grouped.ingredient, liquids);
-                ListedIngredient {
-                    index: crate::int(grouped.index),
-                    amounts: grouped.quantity.iter().map(|q| Amount::new(q, converter, liquid)).collect(),
-                }
+                // Unscaled, the list shows the recipe's own amount; a total over later
+                // references wasn't written by the recipe, so it gets the written form.
+                let total = grouped
+                    .ingredient
+                    .relation
+                    .referenced_from()
+                    .iter()
+                    .any(|&i| recipe.ingredients[i].quantity.is_some());
+                let amounts = if as_written && !total {
+                    grouped.ingredient.quantity.iter().map(|q| amount(q, liquid)).collect()
+                } else {
+                    grouped.quantity.iter().map(|q| Amount::new(q, converter, liquid)).collect()
+                };
+                ListedIngredient { index: crate::int(grouped.index), amounts }
             })
             .collect(),
-        cookware: recipe.cookware.iter().map(|c| cookware(c, converter)).collect(),
-        timers: recipe.timers.iter().map(|t| timer(t, converter)).collect(),
-        inline_quantities: recipe.inline_quantities.iter().map(|q| Amount::new(q, converter, false)).collect(),
+        cookware: recipe.cookware.iter().map(|c| cookware(c, &amount)).collect(),
+        timers: recipe.timers.iter().map(|t| timer(t, converter, &amount)).collect(),
+        inline_quantities: recipe.inline_quantities.iter().map(|q| amount(q, false)).collect(),
         warnings,
     }
 }
@@ -266,8 +284,8 @@ fn is_liquid(ingredient: &core::Ingredient, liquids: &crate::parser::Liquids) ->
 fn ingredient(
     ingredient: &core::Ingredient,
     section: usize,
-    converter: &cooklang::Converter,
     liquids: &crate::parser::Liquids,
+    amount: &impl Fn(&cooklang::quantity::Quantity, bool) -> Amount,
 ) -> Ingredient {
     let liquid = is_liquid(ingredient, liquids);
     use core::IngredientReferenceTarget as Target;
@@ -295,7 +313,7 @@ fn ingredient(
         name: ingredient.name.clone(),
         alias: ingredient.alias.clone(),
         display_name: ingredient.display_name().into_owned(),
-        amount: ingredient.quantity.as_ref().map(|q| Amount::new(q, converter, liquid)),
+        amount: ingredient.quantity.as_ref().map(|q| amount(q, liquid)),
         note: ingredient.note.clone(),
         reference: ingredient.reference.as_ref().map(|r| RecipeReference {
             name: r.name.clone(),
@@ -307,12 +325,15 @@ fn ingredient(
     }
 }
 
-fn cookware(cookware: &core::Cookware, converter: &cooklang::Converter) -> Cookware {
+fn cookware(
+    cookware: &core::Cookware,
+    amount: &impl Fn(&cooklang::quantity::Quantity, bool) -> Amount,
+) -> Cookware {
     Cookware {
         name: cookware.name.clone(),
         alias: cookware.alias.clone(),
         display_name: cookware.display_name().to_string(),
-        amount: cookware.quantity.as_ref().map(|q| Amount::new(q, converter, false)),
+        amount: cookware.quantity.as_ref().map(|q| amount(q, false)),
         note: cookware.note.clone(),
         optional: cookware.modifiers().is_optional(),
         hidden: cookware.modifiers().is_hidden(),
@@ -320,10 +341,14 @@ fn cookware(cookware: &core::Cookware, converter: &cooklang::Converter) -> Cookw
     }
 }
 
-fn timer(timer: &core::Timer, converter: &cooklang::Converter) -> Timer {
+fn timer(
+    timer: &core::Timer,
+    converter: &cooklang::Converter,
+    amount: &impl Fn(&cooklang::quantity::Quantity, bool) -> Amount,
+) -> Timer {
     Timer {
         name: timer.name.clone(),
-        amount: timer.quantity.as_ref().map(|q| Amount::new(q, converter, false)),
+        amount: timer.quantity.as_ref().map(|q| amount(q, false)),
         duration: timer.quantity.as_ref().and_then(|q| duration(q, converter)),
     }
 }
